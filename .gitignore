@@ -1,0 +1,33 @@
+# ============================================================
+# Norys — root .gitignore
+# ============================================================
+
+# --- Secrets ---
+.env
+*.key
+*.pem
+*.p12
+*.pfx
+
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# --- Editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Deploy artefacts ---
+deploy.log
+
+# --- Docker local volumes (never commit data) ---
+norys-infra/caddy/data/
+norys-infra/caddy/config/

@@ -1,0 +1,46 @@
+# Minimal stack to run Norys Core locally. The full production stack
+# (Qdrant, Ollama, MCP servers, reverse proxy) lives in the infra repo;
+# this compose file is enough to develop and test the backend end-to-end.
+services:
+  api:
+    build: .
+    env_file: .env
+    environment:
+      NORYS_POSTGRES_HOST: postgres
+      NORYS_REDIS_HOST: redis
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - norys_documents:/data/norys/documents
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${NORYS_POSTGRES_USER:-norys}
+      POSTGRES_PASSWORD: ${NORYS_POSTGRES_PASSWORD:-norys}
+      POSTGRES_DB: ${NORYS_POSTGRES_DB:-norys}
+    volumes:
+      - norys_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${NORYS_POSTGRES_USER:-norys}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  norys_pgdata:
+  norys_documents:

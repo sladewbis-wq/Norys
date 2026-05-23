@@ -1,0 +1,41 @@
+# Norys edge reverse proxy.
+#
+# - On a real domain, Caddy obtains and renews TLS certificates automatically.
+# - On localhost it serves over HTTP (and Caddy's local CA for HTTPS).
+#
+# The frontend (web) handles the UI and proxies /api/* to the backend itself,
+# so the edge only needs to route everything to `web`. The /api path is also
+# routed directly to `api` to allow API-only clients and streaming (SSE).
+
+{
+	email {$NORYS_TLS_EMAIL}
+	# Uncomment to use a staging CA while testing:
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+{$NORYS_DOMAIN} {
+	encode zstd gzip
+
+	# Security headers (enterprise hardening baseline).
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# API + docs straight to the backend. flush_interval -1 disables buffering
+	# so Server-Sent Events (streaming chat) reach the client in real time.
+	@api path /api/* /docs /openapi.json
+	handle @api {
+		reverse_proxy api:8000 {
+			flush_interval -1
+		}
+	}
+
+	# Everything else → the Next.js frontend.
+	handle {
+		reverse_proxy web:3000
+	}
+}

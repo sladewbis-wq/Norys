@@ -1,0 +1,21 @@
+# Cloudflare Tunnel overlay — expose Norys without opening inbound ports.
+#
+#   1. Create a tunnel in the Cloudflare Zero Trust dashboard and copy its token.
+#   2. Set NORYS_CLOUDFLARE_TUNNEL_TOKEN in .env
+#   3. Point the tunnel's public hostname at http://caddy:80 (or web:3000).
+#   4. Run:
+#        docker compose -f docker-compose.yml -f docker-compose.cloudflare.yml up -d
+#
+# With a tunnel you can drop the published 80/443 ports on caddy entirely and
+# rely on Cloudflare for TLS + DDoS protection.
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${NORYS_CLOUDFLARE_TUNNEL_TOKEN:?set NORYS_CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - caddy
+    networks:
+      - edge

@@ -1,0 +1,200 @@
+# ============================================================
+# Norys — production-ready stack
+# Layers: OpenUI (web) · Norys Core (api) · data (postgres/redis/qdrant)
+#         local models (ollama) · tools (mcp) · edge (caddy reverse proxy)
+#
+# Security model: only the reverse proxy is exposed to the host. Every other
+# service lives on the internal network and is unreachable from outside.
+#
+#   docker compose --env-file .env up -d
+# ============================================================
+
+name: norys
+
+x-restart: &restart
+  restart: unless-stopped
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  # ---------------- Edge: reverse proxy (TLS) ----------------
+  caddy:
+    image: caddy:2.8-alpine
+    <<: [*restart, *logging]
+    depends_on:
+      - web
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      NORYS_DOMAIN: ${NORYS_DOMAIN:-localhost}
+      NORYS_TLS_EMAIL: ${NORYS_TLS_EMAIL:-internal}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - edge
+      - internal
+
+  # ---------------- OpenUI layer: frontend ----------------
+  web:
+    build:
+      context: ../norys-frontend
+      dockerfile: Dockerfile
+    <<: [*restart, *logging]
+    environment:
+      NODE_ENV: production
+      # Server-side rewrites proxy /api/* to the backend over the internal net.
+      NORYS_API_BASE: http://api:8000
+    expose:
+      - "3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - internal
+
+  # ---------------- Norys Core layer: backend API ----------------
+  api:
+    build:
+      context: ../norys-backend
+      dockerfile: Dockerfile
+    <<: [*restart, *logging]
+    env_file: .env
+    environment:
+      NORYS_ENV: production
+      NORYS_DEBUG: "false"
+      NORYS_POSTGRES_HOST: postgres
+      NORYS_REDIS_HOST: redis
+      NORYS_OLLAMA_BASE_URL: http://ollama:11434
+    expose:
+      - "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - api_documents:/data/norys/documents
+    networks:
+      - internal
+
+  # Runs DB migrations once, then exits. Keeps `api` startup clean.
+  migrate:
+    build:
+      context: ../norys-backend
+      dockerfile: Dockerfile
+    env_file: .env
+    environment:
+      NORYS_POSTGRES_HOST: postgres
+      NORYS_REDIS_HOST: redis
+    command: >
+      sh -c "alembic upgrade head || (alembic revision --autogenerate -m 'auto' && alembic upgrade head)"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+    restart: "no"
+
+  # ---------------- Data layer ----------------
+  postgres:
+    image: postgres:16-alpine
+    <<: [*restart, *logging]
+    environment:
+      POSTGRES_USER: ${NORYS_POSTGRES_USER:-norys}
+      POSTGRES_PASSWORD: ${NORYS_POSTGRES_PASSWORD:?set NORYS_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${NORYS_POSTGRES_DB:-norys}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${NORYS_POSTGRES_USER:-norys}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks:
+      - internal
+
+  redis:
+    image: redis:7-alpine
+    <<: [*restart, *logging]
+    command: >
+      redis-server --appendonly yes
+      ${NORYS_REDIS_PASSWORD:+--requirepass ${NORYS_REDIS_PASSWORD}}
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks:
+      - internal
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.1
+    <<: [*restart, *logging]
+    volumes:
+      - qdrantdata:/qdrant/storage
+    expose:
+      - "6333"
+      - "6334"
+    networks:
+      - internal
+
+  # ---------------- Local models layer ----------------
+  # Self-hosted inference. For GPU, uncomment the deploy block and use the
+  # NVIDIA container toolkit on the host.
+  ollama:
+    image: ollama/ollama:latest
+    <<: [*restart, *logging]
+    volumes:
+      - ollamadata:/root/.ollama
+    expose:
+      - "11434"
+    networks:
+      - internal
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # ---------------- Tools layer: MCP server(s) ----------------
+  # Placeholder MCP server exposing internal tools to agents. Replace the image
+  # with your own MCP server(s); add more services as needed.
+  mcp:
+    image: ghcr.io/norys/mcp-tools:latest
+    <<: [*restart, *logging]
+    profiles: ["mcp"]
+    environment:
+      MCP_BIND: 0.0.0.0:8080
+    expose:
+      - "8080"
+    networks:
+      - internal
+
+networks:
+  edge:
+    driver: bridge
+  internal:
+    driver: bridge
+    internal: false # set true to fully isolate; proxy bridges edge<->internal
+
+volumes:
+  caddy_data:
+  caddy_config:
+  pgdata:
+  redisdata:
+  qdrantdata:
+  ollamadata:
+  api_documents:

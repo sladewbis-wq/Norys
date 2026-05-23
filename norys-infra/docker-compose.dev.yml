@@ -1,0 +1,32 @@
+# Development override.
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# Exposes data services to the host for inspection and turns on API debug.
+# Do NOT use in production (ports are published on the host).
+services:
+  api:
+    environment:
+      NORYS_ENV: development
+      NORYS_DEBUG: "true"
+    ports:
+      - "8000:8000"
+
+  web:
+    ports:
+      - "3000:3000"
+
+  postgres:
+    ports:
+      - "5432:5432"
+
+  redis:
+    ports:
+      - "6379:6379"
+
+  qdrant:
+    ports:
+      - "6333:6333"
+
+  ollama:
+    ports:
+      - "11434:11434"
