@@ -16,6 +16,6 @@ services:
     environment:
       TUNNEL_TOKEN: ${NORYS_CLOUDFLARE_TUNNEL_TOKEN:?set NORYS_CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
-      - caddy
+      - web
     networks:
-      - edge
+      - internal  # accès direct au container web:3000
