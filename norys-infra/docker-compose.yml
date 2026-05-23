@@ -48,10 +48,12 @@ services:
     build:
       context: ../norys-frontend
       dockerfile: Dockerfile
+      args:
+        # Baked into the Next.js route manifest at build time (next.config.mjs rewrites).
+        NORYS_API_BASE: http://api:8000
     <<: [*restart, *logging]
     environment:
       NODE_ENV: production
-      # Server-side rewrites proxy /api/* to the backend over the internal net.
       NORYS_API_BASE: http://api:8000
     expose:
       - "3000"

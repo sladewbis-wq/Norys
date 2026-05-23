@@ -9,6 +9,10 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
+# NORYS_API_BASE is read by next.config.mjs at build time to compile the rewrite rule.
+# Default points to the api service on the internal Docker network.
+ARG NORYS_API_BASE=http://api:8000
+ENV NORYS_API_BASE=${NORYS_API_BASE}
 RUN npm run build
 
 FROM node:20-alpine AS runner
