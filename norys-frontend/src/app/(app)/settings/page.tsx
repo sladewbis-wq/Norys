@@ -352,7 +352,7 @@ function ApiKeyStatus({ label, set }: { label: string; set: boolean }) {
         <XCircle className="h-3.5 w-3.5 text-content-muted" />
       )}
       <span className={set ? "text-content" : "text-content-muted"}>{label}</span>
-      <Badge tone={set ? "success" : "neutral"} className="ml-1">
+      <Badge tone={set ? "success" : "neutral"}>
         {set ? "Configurée" : "Non définie"}
       </Badge>
     </div>
