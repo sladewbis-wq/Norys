@@ -75,6 +75,7 @@ services:
       NORYS_DEBUG: "false"
       NORYS_POSTGRES_HOST: postgres
       NORYS_REDIS_HOST: redis
+      PYTHONPATH: /app
       NORYS_OLLAMA_BASE_URL: http://ollama:11434
     expose:
       - "8000"
@@ -97,6 +98,7 @@ services:
     environment:
       NORYS_POSTGRES_HOST: postgres
       NORYS_REDIS_HOST: redis
+      PYTHONPATH: /app
     command: python scripts/init_db.py
     depends_on:
       postgres:

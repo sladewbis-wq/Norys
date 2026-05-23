@@ -6,6 +6,7 @@ import {
   Bot,
   FileText,
   LayoutDashboard,
+  PlugZap,
   LogOut,
   MessagesSquare,
   Settings,
@@ -21,6 +22,7 @@ const NAV = [
   { href: "/cockpit", label: "Cockpit", icon: LayoutDashboard },
   { href: "/chat", label: "Assistants", icon: MessagesSquare },
   { href: "/agents", label: "Agents", icon: Bot },
+  { href: "/applications", label: "Applications", icon: PlugZap },
   { href: "/documents", label: "Documents", icon: FileText },
 ];
 
