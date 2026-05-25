@@ -172,6 +172,17 @@ services:
     #           count: all
     #           capabilities: [gpu]
 
+  # ---------------- Edge: Cloudflare Tunnel ----------------
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    <<: [*restart, *logging]
+    command: tunnel --no-autoupdate run --token ${NORYS_CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - caddy
+    networks:
+      - edge
+      - internal
+
   # ---------------- Tools layer: MCP server(s) ----------------
   # Placeholder MCP server exposing internal tools to agents. Replace the image
   # with your own MCP server(s); add more services as needed.

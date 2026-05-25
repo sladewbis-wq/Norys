@@ -6,12 +6,14 @@ import {
   Bot,
   FileText,
   LayoutDashboard,
-  PlugZap,
   LogOut,
   MessagesSquare,
+  PlugZap,
   Settings,
   Shield,
   Sparkles,
+  Activity,
+  Crown,
 } from "lucide-react";
 
 import { useAuth } from "@/lib/auth-context";
@@ -19,11 +21,13 @@ import { cn, initials } from "@/lib/utils";
 import { Avatar } from "./ui";
 
 const NAV = [
-  { href: "/cockpit", label: "Cockpit", icon: LayoutDashboard },
-  { href: "/chat", label: "Assistants", icon: MessagesSquare },
-  { href: "/agents", label: "Agents", icon: Bot },
-  { href: "/applications", label: "Applications", icon: PlugZap },
-  { href: "/documents", label: "Documents", icon: FileText },
+  { href: "/cockpit",        label: "Cockpit",        icon: LayoutDashboard },
+  { href: "/chat",           label: "Assistants",     icon: MessagesSquare  },
+  { href: "/agents",         label: "Agents",         icon: Bot             },
+  { href: "/orchestrateur",  label: "Orchestrateur",  icon: Crown           },
+  { href: "/activity",       label: "Activité",       icon: Activity        },
+  { href: "/applications",   label: "Applications",   icon: PlugZap         },
+  { href: "/documents",      label: "Documents",      icon: FileText        },
 ];
 
 const ADMIN_NAV = [
