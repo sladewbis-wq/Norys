@@ -689,7 +689,7 @@ export class AgentRunner {
         task.status = "error";
         task.error = `Limite d'itérations atteinte (${config.maxIterations})`;
         this.emit({ type: "state_change", agentId: config.agentId, state: "error" });
-        this.emit({ type: "task_error", agentId: config.agentId, taskId: id, error: task.error });
+        this.emit({ type: "task_error", agentId: config.agentId, taskId: id, error: task.error ?? "Erreur inconnue" });
       }
     } catch (e: any) {
       if (e?.name === "AbortError") {
@@ -698,7 +698,7 @@ export class AgentRunner {
       } else {
         task.status = "error";
         task.error = e?.message ?? "Erreur inconnue";
-        this.emit({ type: "task_error", agentId: config.agentId, taskId: id, error: task.error });
+        this.emit({ type: "task_error", agentId: config.agentId, taskId: id, error: task.error ?? "Erreur inconnue" });
       }
       this.emit({ type: "state_change", agentId: config.agentId, state: "error" });
     } finally {
