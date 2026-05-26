@@ -1,1232 +1,1330 @@
 "use client";
-/**
- * ╔══════════════════════════════════════════════════════════╗
- * ║       NORYS — HABBO/CHAPATIZ WORLD v1.0                 ║
- * ║  Pure 2D Canvas · Isometric tiles · Walk animations      ║
- * ╚══════════════════════════════════════════════════════════╝
- *
- * Features :
- *  - Isometric tile grid (diamond layout)
- *  - Agent avatars with full sprite-based look
- *  - Walk animations between tiles (pathfinding A*)
- *  - Chat bubbles above agents
- *  - Category-specific workstations (desk, servers, etc.)
- *  - Click to select agent, double-click to open detail
- *  - Orchestrateur boss avatar in center throne
- *  - 60fps Canvas render loop
- */
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import React, { useRef, useEffect, useState, useCallback } from "react";
 
-// Polyfill roundRect for older browsers
-if (typeof window !== "undefined") {
-  const proto = CanvasRenderingContext2D.prototype as any;
-  if (!proto.roundRect) {
-    proto.roundRect = function(x: number, y: number, w: number, h: number, r: number) {
-      if (w < 2 * r) r = w / 2;
-      if (h < 2 * r) r = h / 2;
-      this.beginPath();
-      this.moveTo(x + r, y);
-      this.arcTo(x + w, y, x + w, y + h, r);
-      this.arcTo(x + w, y + h, x, y + h, r);
-      this.arcTo(x, y + h, x, y, r);
-      this.arcTo(x, y, x + w, y, r);
-      this.closePath();
-      return this;
-    };
-  }
-}
+// ─── WORLD CONSTANTS ─────────────────────────────────────────────────────────
+const TW = 56;       // tile diamond width
+const TH = 28;       // tile diamond height
+const WALL_H = 54;   // wall pixel height
+const OX = 820;      // world origin X (canvas space, before pan/zoom)
+const OY = 160;      // world origin Y
 
-// ─── Types ──────────────────────────────────────────────────────────────────
+// ─── PALETTES ────────────────────────────────────────────────────────────────
+export const SKIN_TONES = [
+  "#FDBCB4","#F1C27D","#E0AC69","#C68642","#8D5524","#4A2912",
+];
+export const HAIR_COLORS = [
+  "#1a0a00","#3b1f0a","#6b3a1f","#c8a000","#e8c840","#ff6b35",
+  "#c0392b","#8e44ad","#2980b9","#ecf0f1","#7f8c8d","#2c3e50",
+  "#ff1493","#00ced1",
+];
+export const EYE_COLORS = [
+  "#2c3e50","#1a6b3c","#1a3a6b","#6b3a1a","#8e44ad","#c0392b","#27ae60","#e67e22",
+];
+export const TOP_COLORS = [
+  "#2c3e50","#c0392b","#27ae60","#2980b9","#8e44ad","#e67e22","#f39c12",
+  "#ecf0f1","#7f8c8d","#1abc9c","#e74c3c","#3498db","#9b59b6","#f1c40f",
+  "#34495e","#e91e63",
+];
+export const BOTTOM_COLORS = [
+  "#2c3e50","#34495e","#7f8c8d","#1a3a5c","#4a1a2c","#1a4a2c","#5c4a1a","#2c1a4a",
+  "#ecf0f1","#bdc3c7","#95a5a6","#1abc9c",
+];
+export const SHOE_COLORS = [
+  "#1a0a00","#2c3e50","#7f8c8d","#ecf0f1","#c0392b","#2980b9","#27ae60","#8e44ad",
+  "#e67e22","#f39c12",
+];
+export const ACC_COLORS = [
+  "#f1c40f","#e74c3c","#3498db","#9b59b6","#1abc9c","#e67e22","#ecf0f1","#2c3e50",
+];
 
+export const CATEGORY_BADGE_COLORS: Record<string, string> = {
+  helpdesk: "#e74c3c", hr: "#3498db", documents: "#f39c12",
+  sales: "#9b59b6", support: "#27ae60", devops: "#1abc9c", default: "#7f8c8d",
+};
+export const CATEGORY_ICONS: Record<string, string> = {
+  helpdesk: "🎧", hr: "👥", documents: "📄",
+  sales: "💰", support: "🛠", devops: "⚙️", default: "🤖",
+};
+export const STATE_GLOW: Record<string, string> = {
+  idle: "#7f8c8d", working: "#f39c12", thinking: "#9b59b6",
+  talking: "#3498db", error: "#e74c3c", complete: "#27ae60",
+};
+
+// ─── INTERFACES ───────────────────────────────────────────────────────────────
 export interface AvatarConfig {
-  skinTone: number;    // 0-5
-  hairStyle: number;   // 0-9
-  hairColor: number;   // 0-11
-  eyeStyle: number;    // 0-5
-  eyeColor: number;    // 0-7
-  topStyle: number;    // 0-11
-  topColor: number;    // 0-11
-  bottomStyle: number; // 0-7
-  bottomColor: number; // 0-11
-  shoeStyle: number;   // 0-5
-  shoeColor: number;   // 0-7
-  accessory: number;   // 0-9 (0 = none)
-  badge: number;       // 0-6 (category badge)
+  skinTone: string;
+  hairStyle: string;
+  hairColor: string;
+  eyeStyle: string;
+  eyeColor: string;
+  topStyle: string;
+  topColor: string;
+  bottomStyle: string;
+  bottomColor: string;
+  shoeStyle: string;
+  shoeColor: string;
+  accessory: string;
+  badge: string;
 }
 
 export interface WorldAgent {
   id: string;
   name: string;
   category: string;
-  state: "idle" | "thinking" | "acting" | "error" | "done" | "walking";
+  state: string;
   avatar: AvatarConfig;
   tileX: number;
   tileY: number;
   targetTileX?: number;
   targetTileY?: number;
-  chatBubble?: { text: string; expiresAt: number };
-  taskProgress?: number; // 0-100
+  chatBubble?: string;
+  taskProgress?: number;
 }
 
-// ─── Palette ─────────────────────────────────────────────────────────────────
+// ─── INTERNAL TYPES ───────────────────────────────────────────────────────────
+interface FurnitureObj {
+  gx: number;
+  gy: number;
+  type: string;
+  color?: string;
+  variant?: number;
+}
 
-const SKIN_TONES = ["#FDDBB4", "#F7C98B", "#D4A574", "#C68642", "#8D5524", "#4A2C17"];
-const HAIR_COLORS = ["#1a1a1a", "#4a3728", "#6b4c11", "#8B6914", "#B8860B", "#D4AC0D", "#F4D03F", "#FF6B35", "#E74C3C", "#8E44AD", "#3498DB", "#F0F0F0"];
-const EYE_COLORS = ["#1a1a1a", "#2C3E50", "#1B4F72", "#145A32", "#784212", "#7D6608", "#B03A2E", "#6C3483"];
-const TOP_COLORS = ["#1a1a2e", "#16213e", "#0f3460", "#533483", "#E94560", "#0D7377", "#14BDAC", "#F7B731", "#FC5C65", "#20BF6B", "#45AAF2", "#FFFFFF"];
-const BOTTOM_COLORS = TOP_COLORS;
-const SHOE_COLORS = ["#1a1a1a", "#4a2c17", "#2C3E50", "#78281F", "#0B5345", "#1A237E", "#F0F0F0"];
-const ACC_COLORS = ["#FFD700", "#C0C0C0", "#FF6B35", "#8E44AD", "#E74C3C", "#3498DB", "#2ECC71", "#F39C12", "#1a1a1a"];
+interface ZoneDef {
+  id: number;
+  name: string;
+  label: string;
+  gx: number;
+  gy: number;
+  w: number;
+  h: number;
+  floorColor: string;
+  floorDark: string;
+  wallColor: string;
+  wallColorL: string;
+  badgeColor: string;
+  objects: FurnitureObj[];
+}
 
-const CATEGORY_BADGE_COLORS: Record<string, string> = {
-  helpdesk:  "#3B82F6",
-  hr:        "#EC4899",
-  documents: "#F59E0B",
-  sales:     "#10B981",
-  support:   "#8B5CF6",
-  devops:    "#EF4444",
-  default:   "#6366F1",
+interface RenderItem {
+  sortKey: number;
+  render: (ctx: CanvasRenderingContext2D) => void;
+}
+
+// ─── ZONE DEFINITIONS ────────────────────────────────────────────────────────
+const ZONES: ZoneDef[] = [
+  {
+    id: 1, name: "accueil", label: "Accueil",
+    gx: 0, gy: 0, w: 9, h: 7,
+    floorColor: "#C8A882", floorDark: "#B09870",
+    wallColor: "#D4C0A8", wallColorL: "#BEA898",
+    badgeColor: "#e67e22",
+    objects: [
+      { gx: 2, gy: 1, type: "sofa", color: "#7B1212" },
+      { gx: 4, gy: 1, type: "sofa", color: "#7B1212" },
+      { gx: 2, gy: 4, type: "table_round", color: "#7A5010" },
+      { gx: 4, gy: 4, type: "chair", color: "#7B1212" },
+      { gx: 6, gy: 2, type: "plant", color: "#1E6B1E" },
+      { gx: 6, gy: 5, type: "plant", color: "#1E6B1E" },
+      { gx: 1, gy: 5, type: "desk", color: "#8B6030" },
+      { gx: 1, gy: 6, type: "computer", color: "#1a2035" },
+      { gx: 7, gy: 1, type: "sign", color: "#e67e22" },
+    ],
+  },
+  {
+    id: 2, name: "salon", label: "Salon VIP",
+    gx: 10, gy: 0, w: 10, h: 7,
+    floorColor: "#7A1818", floorDark: "#600808",
+    wallColor: "#5A1010", wallColorL: "#4A0808",
+    badgeColor: "#9b59b6",
+    objects: [
+      { gx: 11, gy: 1, type: "sofa_l", color: "#320808" },
+      { gx: 14, gy: 1, type: "sofa_l", color: "#320808" },
+      { gx: 17, gy: 1, type: "sofa_l", color: "#320808" },
+      { gx: 12, gy: 3, type: "table", color: "#4A2008" },
+      { gx: 15, gy: 3, type: "table", color: "#4A2008" },
+      { gx: 11, gy: 5, type: "counter", color: "#2A1000" },
+      { gx: 13, gy: 5, type: "counter", color: "#2A1000" },
+      { gx: 15, gy: 5, type: "counter", color: "#2A1000" },
+      { gx: 18, gy: 2, type: "plant", color: "#0E380E" },
+      { gx: 18, gy: 5, type: "plant", color: "#0E380E" },
+    ],
+  },
+  {
+    id: 3, name: "missions", label: "Missions",
+    gx: 21, gy: 1, w: 9, h: 8,
+    floorColor: "#1A3558", floorDark: "#0E2240",
+    wallColor: "#162A48", wallColorL: "#0A1E38",
+    badgeColor: "#e74c3c",
+    objects: [
+      { gx: 22, gy: 2, type: "mission_board", color: "#081830" },
+      { gx: 25, gy: 2, type: "desk", color: "#162A50" },
+      { gx: 27, gy: 2, type: "desk", color: "#162A50" },
+      { gx: 25, gy: 3, type: "computer", color: "#0d1b2a" },
+      { gx: 27, gy: 3, type: "computer", color: "#0d1b2a" },
+      { gx: 22, gy: 5, type: "desk", color: "#162A50" },
+      { gx: 24, gy: 5, type: "desk", color: "#162A50" },
+      { gx: 22, gy: 6, type: "computer", color: "#0d1b2a" },
+      { gx: 24, gy: 6, type: "computer", color: "#0d1b2a" },
+      { gx: 28, gy: 4, type: "shelf", color: "#162A50" },
+      { gx: 28, gy: 7, type: "plant", color: "#0E3A1E" },
+    ],
+  },
+  {
+    id: 4, name: "boutique", label: "Boutique",
+    gx: 0, gy: 8, w: 9, h: 7,
+    floorColor: "#D09858", floorDark: "#B07840",
+    wallColor: "#B08050", wallColorL: "#907040",
+    badgeColor: "#f39c12",
+    objects: [
+      { gx: 1, gy: 9, type: "shelf", color: "#4A2008" },
+      { gx: 1, gy: 11, type: "shelf", color: "#4A2008" },
+      { gx: 3, gy: 9, type: "shelf", color: "#4A2008" },
+      { gx: 5, gy: 9, type: "counter", color: "#7A3810" },
+      { gx: 5, gy: 11, type: "counter", color: "#7A3810" },
+      { gx: 7, gy: 10, type: "counter", color: "#7A3810" },
+      { gx: 3, gy: 12, type: "plant", color: "#205810" },
+      { gx: 7, gy: 13, type: "plant", color: "#205810" },
+      { gx: 1, gy: 13, type: "desk", color: "#7A5820" },
+    ],
+  },
+  {
+    id: 7, name: "hall", label: "Hall Central",
+    gx: 10, gy: 8, w: 10, h: 6,
+    floorColor: "#888070", floorDark: "#686050",
+    wallColor: "#706858", wallColorL: "#605848",
+    badgeColor: "#7f8c8d",
+    objects: [
+      { gx: 14, gy: 10, type: "fountain", color: "#3A7AAA" },
+      { gx: 11, gy: 9, type: "bench", color: "#4A2808" },
+      { gx: 17, gy: 9, type: "bench", color: "#4A2808" },
+      { gx: 11, gy: 12, type: "plant", color: "#205810" },
+      { gx: 18, gy: 12, type: "plant", color: "#205810" },
+    ],
+  },
+  {
+    id: 5, name: "jeu", label: "Salle de Jeu",
+    gx: 0, gy: 16, w: 10, h: 9,
+    floorColor: "#140820", floorDark: "#0A0412",
+    wallColor: "#100618", wallColorL: "#0A0412",
+    badgeColor: "#8e44ad",
+    objects: [
+      { gx: 1, gy: 17, type: "arcade", color: "#cc0000", variant: 0 },
+      { gx: 3, gy: 17, type: "arcade", color: "#0055cc", variant: 1 },
+      { gx: 5, gy: 17, type: "arcade", color: "#7700cc", variant: 2 },
+      { gx: 7, gy: 17, type: "arcade", color: "#007700", variant: 3 },
+      { gx: 1, gy: 20, type: "arcade", color: "#cc7700", variant: 0 },
+      { gx: 3, gy: 20, type: "arcade", color: "#cc0055", variant: 1 },
+      { gx: 5, gy: 21, type: "bench", color: "#1a1a3a" },
+      { gx: 7, gy: 21, type: "bench", color: "#1a1a3a" },
+      { gx: 4, gy: 23, type: "table", color: "#1a1a3a" },
+    ],
+  },
+  {
+    id: 6, name: "jardin", label: "Jardin",
+    gx: 11, gy: 15, w: 12, h: 10,
+    floorColor: "#285018", floorDark: "#1A3A0A",
+    wallColor: "#1A3A0A", wallColorL: "#102800",
+    badgeColor: "#27ae60",
+    objects: [
+      { gx: 12, gy: 16, type: "tree", color: "#0E2A08" },
+      { gx: 15, gy: 16, type: "tree", color: "#0E2A08" },
+      { gx: 20, gy: 16, type: "tree", color: "#0E2A08" },
+      { gx: 21, gy: 18, type: "tree", color: "#0E2A08" },
+      { gx: 14, gy: 19, type: "pond", color: "#1E5A8A" },
+      { gx: 17, gy: 20, type: "bench", color: "#4A2808" },
+      { gx: 12, gy: 20, type: "bench", color: "#4A2808" },
+      { gx: 13, gy: 22, type: "tree", color: "#0E2A08" },
+      { gx: 19, gy: 22, type: "tree", color: "#0E2A08" },
+      { gx: 21, gy: 21, type: "plant", color: "#2D5A1B" },
+      { gx: 16, gy: 17, type: "plant", color: "#2D5A1B" },
+    ],
+  },
+];
+
+// ─── CATEGORY → ZONE MAPPING ──────────────────────────────────────────────────
+const CATEGORY_ZONE: Record<string, string> = {
+  helpdesk: "missions",
+  hr: "accueil",
+  documents: "boutique",
+  sales: "salon",
+  support: "missions",
+  devops: "jeu",
+  default: "jardin",
 };
 
-const CATEGORY_ICONS: Record<string, string> = {
-  helpdesk:  "🖥️",
-  hr:        "👥",
-  documents: "📄",
-  sales:     "📈",
-  support:   "🎧",
-  devops:    "⚙️",
-  default:   "🤖",
-};
-
-// State colors
-const STATE_GLOW: Record<string, string> = {
-  idle:      "rgba(99, 102, 241, 0)",
-  thinking:  "rgba(245, 158, 11, 0.6)",
-  acting:    "rgba(59, 130, 246, 0.7)",
-  error:     "rgba(239, 68, 68, 0.7)",
-  done:      "rgba(16, 185, 129, 0.6)",
-  walking:   "rgba(99, 102, 241, 0.4)",
-};
-
-// ─── Isometric Projection ─────────────────────────────────────────────────────
-
-const TILE_W = 64;
-const TILE_H = 32;
-
-function tileToScreen(tx: number, ty: number): { x: number; y: number } {
+// ─── ISO PROJECTION ───────────────────────────────────────────────────────────
+function iso(gx: number, gy: number) {
   return {
-    x: (tx - ty) * (TILE_W / 2),
-    y: (tx + ty) * (TILE_H / 2),
+    x: OX + (gx - gy) * (TW / 2),
+    y: OY + (gx + gy) * (TH / 2),
   };
 }
 
-// ─── Avatar Renderer (Canvas 2D) ─────────────────────────────────────────────
-
-function drawAvatar(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  avatar: AvatarConfig,
-  scale: number = 1,
-  facing: "front" | "left" | "right" = "front",
-  walkPhase: number = 0,
-  stateGlow?: string
-) {
-  const s = scale;
-  const cx = x;
-  const cy = y;
-
-  ctx.save();
-  ctx.translate(cx, cy);
-
-  // ── Glow effect ──────────────────────────────────────────────────────────
-  if (stateGlow && stateGlow !== "rgba(99, 102, 241, 0)") {
-    ctx.shadowColor = stateGlow;
-    ctx.shadowBlur = 20 * s;
-  }
-
-  // ── Walk leg offset ──────────────────────────────────────────────────────
-  const legSwing = Math.sin(walkPhase * 0.2) * 3 * s;
-  const armSwing = Math.cos(walkPhase * 0.2) * 4 * s;
-  const bodyBob = Math.abs(Math.sin(walkPhase * 0.2)) * 1.5 * s;
-
-  // ── Shoes ────────────────────────────────────────────────────────────────
-  const shoeColor = SHOE_COLORS[avatar.shoeColor] ?? "#1a1a1a";
-  ctx.fillStyle = shoeColor;
-  // Left shoe
-  ctx.beginPath();
-  ctx.ellipse(-5 * s + (facing !== "front" ? legSwing : 0), 20 * s - bodyBob, 5 * s, 3 * s, 0, 0, Math.PI * 2);
-  ctx.fill();
-  // Right shoe
-  ctx.beginPath();
-  ctx.ellipse(5 * s - (facing !== "front" ? legSwing : 0), 20 * s - bodyBob, 5 * s, 3 * s, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // ── Legs ─────────────────────────────────────────────────────────────────
-  const bottomColor = BOTTOM_COLORS[avatar.bottomColor] ?? "#1a1a2e";
-  ctx.fillStyle = bottomColor;
-
-  // Left leg
-  ctx.save();
-  ctx.translate(-5 * s, 10 * s - bodyBob);
-  if (facing !== "front") ctx.rotate((legSwing * Math.PI) / 180);
-  ctx.fillRect(-4 * s, 0, 7 * s, 10 * s);
-  ctx.restore();
-
-  // Right leg
-  ctx.save();
-  ctx.translate(5 * s, 10 * s - bodyBob);
-  if (facing !== "front") ctx.rotate((-legSwing * Math.PI) / 180);
-  ctx.fillRect(-3 * s, 0, 7 * s, 10 * s);
-  ctx.restore();
-
-  // ── Body (torso) ──────────────────────────────────────────────────────────
-  const topColor = TOP_COLORS[avatar.topColor] ?? "#16213e";
-  ctx.fillStyle = topColor;
-  ctx.beginPath();
-  ctx.roundRect(-9 * s, -4 * s - bodyBob, 18 * s, 14 * s, 2 * s);
-  ctx.fill();
-
-  // Top style variations
-  ctx.fillStyle = "rgba(255,255,255,0.1)";
-  if (avatar.topStyle % 3 === 1) {
-    // Stripe
-    ctx.fillRect(-9 * s, 1 * s - bodyBob, 18 * s, 2 * s);
-  } else if (avatar.topStyle % 3 === 2) {
-    // Collar
-    ctx.beginPath();
-    ctx.moveTo(-3 * s, -4 * s - bodyBob);
-    ctx.lineTo(0, 0 - bodyBob);
-    ctx.lineTo(3 * s, -4 * s - bodyBob);
-    ctx.fill();
-  }
-
-  // ── Arms ─────────────────────────────────────────────────────────────────
-  ctx.fillStyle = topColor;
-
-  // Left arm
-  ctx.save();
-  ctx.translate(-11 * s, -3 * s - bodyBob);
-  ctx.rotate((armSwing * Math.PI) / 180);
-  ctx.fillRect(-3 * s, 0, 5 * s, 10 * s);
-  ctx.restore();
-
-  // Right arm
-  ctx.save();
-  ctx.translate(11 * s, -3 * s - bodyBob);
-  ctx.rotate((-armSwing * Math.PI) / 180);
-  ctx.fillRect(-2 * s, 0, 5 * s, 10 * s);
-  ctx.restore();
-
-  // ── Hands ────────────────────────────────────────────────────────────────
-  const skinColor = SKIN_TONES[avatar.skinTone] ?? "#FDDBB4";
-  ctx.fillStyle = skinColor;
-
-  ctx.save();
-  ctx.translate(-11 * s, -3 * s - bodyBob + 12 * s);
-  ctx.rotate((armSwing * Math.PI) / 180);
-  ctx.beginPath();
-  ctx.ellipse(0, 8 * s, 4 * s, 4 * s, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-
-  ctx.save();
-  ctx.translate(11 * s, -3 * s - bodyBob + 12 * s);
-  ctx.rotate((-armSwing * Math.PI) / 180);
-  ctx.beginPath();
-  ctx.ellipse(0, 8 * s, 4 * s, 4 * s, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-
-  // ── Neck ─────────────────────────────────────────────────────────────────
-  ctx.fillStyle = skinColor;
-  ctx.fillRect(-3 * s, -8 * s - bodyBob, 6 * s, 5 * s);
-
-  // ── Head ─────────────────────────────────────────────────────────────────
-  ctx.fillStyle = skinColor;
-  ctx.beginPath();
-  ctx.ellipse(0, -16 * s - bodyBob, 11 * s, 13 * s, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // ── Eyes ─────────────────────────────────────────────────────────────────
-  const eyeColor = EYE_COLORS[avatar.eyeColor] ?? "#1a1a1a";
-  const eyeStyleType = avatar.eyeStyle % 3; // 0=round, 1=almond, 2=wide
-  ctx.fillStyle = "white";
-  ctx.beginPath();
-  ctx.ellipse(-4 * s, -17 * s - bodyBob, 3.5 * s, 3 * s, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.ellipse(4 * s, -17 * s - bodyBob, 3.5 * s, 3 * s, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.fillStyle = eyeColor;
-  ctx.beginPath();
-  ctx.ellipse(-4 * s, -17 * s - bodyBob, 2 * s, eyeStyleType === 2 ? 2.5 * s : 2 * s, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.ellipse(4 * s, -17 * s - bodyBob, 2 * s, eyeStyleType === 2 ? 2.5 * s : 2 * s, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Eye shine
-  ctx.fillStyle = "rgba(255,255,255,0.8)";
-  ctx.beginPath();
-  ctx.ellipse(-3 * s, -18 * s - bodyBob, 0.8 * s, 0.8 * s, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.ellipse(5 * s, -18 * s - bodyBob, 0.8 * s, 0.8 * s, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // ── Hair ─────────────────────────────────────────────────────────────────
-  const hairColor = HAIR_COLORS[avatar.hairColor] ?? "#1a1a1a";
-  ctx.fillStyle = hairColor;
-  const hairStyle = avatar.hairStyle % 10;
-
-  if (hairStyle === 0) {
-    // Short spiky
-    ctx.beginPath();
-    ctx.arc(0, -24 * s - bodyBob, 10 * s, Math.PI, 0);
-    ctx.fill();
-    for (let i = -3; i <= 3; i++) {
-      ctx.beginPath();
-      ctx.moveTo(i * 3.3 * s - 1 * s, -29 * s - bodyBob);
-      ctx.lineTo(i * 3.3 * s + 1 * s, -29 * s - bodyBob);
-      ctx.lineTo(i * 3.3 * s, -34 * s - i * 0.5 * s - bodyBob);
-      ctx.fill();
-    }
-  } else if (hairStyle === 1) {
-    // Long straight
-    ctx.beginPath();
-    ctx.arc(0, -24 * s - bodyBob, 10 * s, Math.PI, 0);
-    ctx.fill();
-    ctx.fillRect(-11 * s, -26 * s - bodyBob, 4 * s, 16 * s);
-    ctx.fillRect(7 * s, -26 * s - bodyBob, 4 * s, 16 * s);
-  } else if (hairStyle === 2) {
-    // Mohawk
-    ctx.fillRect(-3 * s, -34 * s - bodyBob, 6 * s, 12 * s);
-    ctx.beginPath();
-    ctx.arc(0, -27 * s - bodyBob, 8 * s, Math.PI, 0);
-    ctx.fill();
-  } else if (hairStyle === 3) {
-    // Afro
-    ctx.beginPath();
-    ctx.arc(0, -26 * s - bodyBob, 14 * s, 0, Math.PI * 2);
-    ctx.fill();
-  } else if (hairStyle === 4) {
-    // Bob
-    ctx.beginPath();
-    ctx.arc(0, -24 * s - bodyBob, 11 * s, Math.PI, 0);
-    ctx.fill();
-    ctx.fillRect(-11 * s, -26 * s - bodyBob, 22 * s, 8 * s);
-  } else if (hairStyle === 5) {
-    // Ponytail
-    ctx.beginPath();
-    ctx.arc(0, -25 * s - bodyBob, 10 * s, Math.PI, 0);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(9 * s, -26 * s - bodyBob);
-    ctx.bezierCurveTo(16 * s, -22 * s - bodyBob, 18 * s, -12 * s - bodyBob, 10 * s, -6 * s - bodyBob);
-    ctx.lineTo(8 * s, -8 * s - bodyBob);
-    ctx.bezierCurveTo(14 * s, -13 * s - bodyBob, 12 * s, -21 * s - bodyBob, 7 * s, -24 * s - bodyBob);
-    ctx.fill();
-  } else if (hairStyle === 6) {
-    // Bun
-    ctx.beginPath();
-    ctx.arc(0, -25 * s - bodyBob, 10 * s, Math.PI, 0);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(0, -33 * s - bodyBob, 5 * s, 0, Math.PI * 2);
-    ctx.fill();
-  } else if (hairStyle === 7) {
-    // Wavy
-    ctx.beginPath();
-    ctx.arc(0, -25 * s - bodyBob, 11 * s, Math.PI, 0);
-    ctx.fill();
-    for (let i = 0; i < 3; i++) {
-      ctx.beginPath();
-      ctx.arc(-9 * s + i * 1.5 * s, -22 * s - bodyBob + i * 4 * s, 3.5 * s, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(9 * s - i * 1.5 * s, -22 * s - bodyBob + i * 4 * s, 3.5 * s, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  } else if (hairStyle === 8) {
-    // Buzz cut
-    ctx.beginPath();
-    ctx.arc(0, -25 * s - bodyBob, 11 * s, Math.PI * 1.1, -0.1);
-    ctx.fill();
-    ctx.fillRect(-11 * s, -27 * s - bodyBob, 22 * s, 4 * s);
-  } else {
-    // Curly top
-    ctx.beginPath();
-    ctx.arc(0, -25 * s - bodyBob, 10 * s, Math.PI, 0);
-    ctx.fill();
-    for (let i = -2; i <= 2; i++) {
-      ctx.beginPath();
-      ctx.arc(i * 4 * s, -31 * s - bodyBob, 3 * s, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-
-  // ── Accessory ─────────────────────────────────────────────────────────────
-  if (avatar.accessory > 0) {
-    const accColor = ACC_COLORS[(avatar.accessory - 1) % ACC_COLORS.length];
-    ctx.fillStyle = accColor;
-    if (avatar.accessory === 1) {
-      // Glasses
-      ctx.strokeStyle = accColor;
-      ctx.lineWidth = 1.5 * s;
-      ctx.beginPath();
-      ctx.arc(-4 * s, -17 * s - bodyBob, 4 * s, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(4 * s, -17 * s - bodyBob, 4 * s, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(0, -17 * s - bodyBob);
-      ctx.lineTo(-8 * s, -17 * s - bodyBob);
-      ctx.stroke();
-    } else if (avatar.accessory === 2) {
-      // Headset
-      ctx.lineWidth = 2 * s;
-      ctx.strokeStyle = accColor;
-      ctx.beginPath();
-      ctx.arc(0, -24 * s - bodyBob, 13 * s, Math.PI * 1.1, -0.1);
-      ctx.stroke();
-      ctx.fillRect(-15 * s, -26 * s - bodyBob, 4 * s, 5 * s);
-      ctx.fillRect(11 * s, -26 * s - bodyBob, 4 * s, 5 * s);
-      ctx.fillRect(9 * s, -21 * s - bodyBob, 3 * s, 6 * s); // mic boom
-    } else if (avatar.accessory === 3) {
-      // Crown
-      ctx.beginPath();
-      ctx.moveTo(-8 * s, -33 * s - bodyBob);
-      ctx.lineTo(8 * s, -33 * s - bodyBob);
-      ctx.lineTo(8 * s, -29 * s - bodyBob);
-      ctx.lineTo(4 * s, -33 * s - bodyBob);
-      ctx.lineTo(0, -29 * s - bodyBob);
-      ctx.lineTo(-4 * s, -33 * s - bodyBob);
-      ctx.lineTo(-8 * s, -29 * s - bodyBob);
-      ctx.closePath();
-      ctx.fill();
-    } else if (avatar.accessory === 4) {
-      // Cap
-      ctx.fillRect(-11 * s, -29 * s - bodyBob, 22 * s, 5 * s);
-      ctx.fillRect(-2 * s, -34 * s - bodyBob, 12 * s, 8 * s);
-    } else if (avatar.accessory === 5) {
-      // Tie
-      ctx.fillStyle = accColor;
-      ctx.beginPath();
-      ctx.moveTo(-2 * s, -2 * s - bodyBob);
-      ctx.lineTo(2 * s, -2 * s - bodyBob);
-      ctx.lineTo(3 * s, 4 * s - bodyBob);
-      ctx.lineTo(0, 8 * s - bodyBob);
-      ctx.lineTo(-3 * s, 4 * s - bodyBob);
-      ctx.closePath();
-      ctx.fill();
-    } else if (avatar.accessory === 6) {
-      // Scarf
-      ctx.lineWidth = 4 * s;
-      ctx.strokeStyle = accColor;
-      ctx.beginPath();
-      ctx.arc(0, -5 * s - bodyBob, 9 * s, Math.PI * 1.2, Math.PI * 0.8);
-      ctx.stroke();
-    } else if (avatar.accessory === 7) {
-      // Visor
-      ctx.fillStyle = `${accColor}99`;
-      ctx.fillRect(-9 * s, -20 * s - bodyBob, 18 * s, 5 * s);
-      ctx.fillStyle = accColor;
-      ctx.fillRect(-9 * s, -20 * s - bodyBob, 18 * s, 1.5 * s);
-    } else if (avatar.accessory === 8) {
-      // Earrings
-      ctx.beginPath();
-      ctx.arc(-11 * s, -14 * s - bodyBob, 2 * s, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(11 * s, -14 * s - bodyBob, 2 * s, 0, Math.PI * 2);
-      ctx.fill();
-    } else if (avatar.accessory === 9) {
-      // Backpack
-      ctx.fillStyle = accColor;
-      ctx.fillRect(8 * s, -4 * s - bodyBob, 5 * s, 9 * s);
-      ctx.fillStyle = "rgba(255,255,255,0.2)";
-      ctx.fillRect(9 * s, -2 * s - bodyBob, 3 * s, 2 * s);
-    }
-  }
-
-  // ── Category badge ────────────────────────────────────────────────────────
-  // (displayed as colored dot on chest)
-  const badgeColor = Object.values(CATEGORY_BADGE_COLORS)[avatar.badge % Object.keys(CATEGORY_BADGE_COLORS).length];
-  ctx.fillStyle = badgeColor;
-  ctx.beginPath();
-  ctx.arc(3 * s, -1 * s - bodyBob, 2.5 * s, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "rgba(255,255,255,0.9)";
-  ctx.beginPath();
-  ctx.arc(3.5 * s, -1.5 * s - bodyBob, 0.8 * s, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.restore();
+// ─── COLOR HELPERS ────────────────────────────────────────────────────────────
+function hexToRgb(hex: string): [number, number, number] {
+  const clean = hex.replace("#", "");
+  return [
+    parseInt(clean.slice(0, 2), 16) || 0,
+    parseInt(clean.slice(2, 4), 16) || 0,
+    parseInt(clean.slice(4, 6), 16) || 0,
+  ];
 }
 
-// ─── Tile Renderer ────────────────────────────────────────────────────────────
+function lighten(hex: string, a: number): string {
+  if (!hex.startsWith("#")) return hex;
+  const [r, g, b] = hexToRgb(hex);
+  return `rgb(${Math.min(255, Math.round(r + a * 255))},${Math.min(255, Math.round(g + a * 255))},${Math.min(255, Math.round(b + a * 255))})`;
+}
 
-function drawTile(
-  ctx: CanvasRenderingContext2D,
-  sx: number,
-  sy: number,
-  type: "floor" | "wall" | "workstation" | "throne",
-  isSelected = false
-) {
-  const hw = TILE_W / 2;
-  const hh = TILE_H / 2;
+function darken(hex: string, a: number): string {
+  if (!hex.startsWith("#")) return hex;
+  const [r, g, b] = hexToRgb(hex);
+  return `rgb(${Math.max(0, Math.round(r - a * 255))},${Math.max(0, Math.round(g - a * 255))},${Math.max(0, Math.round(b - a * 255))})`;
+}
 
-  // Top face
-  let topColor = "#1e2a3a";
-  let leftColor = "#151f2d";
-  let rightColor = "#111827";
-
-  if (type === "workstation") {
-    topColor = "#1a2744";
-    leftColor = "#111d36";
-    rightColor = "#0d172a";
-  } else if (type === "throne") {
-    topColor = "#2d1f00";
-    leftColor = "#1a1200";
-    rightColor = "#0f0a00";
-  } else if (type === "wall") {
-    topColor = "#0d1117";
-    leftColor = "#080d12";
-    rightColor = "#060a0f";
-  }
-
-  if (isSelected) {
-    topColor = "#1e3a5f";
-    leftColor = "#152d4a";
-    rightColor = "#102538";
-  }
-
-  // Draw isometric tile
-  // Top face
+// ─── TILE ─────────────────────────────────────────────────────────────────────
+function drawTile(ctx: CanvasRenderingContext2D, gx: number, gy: number, color: string) {
+  const p = iso(gx, gy);
+  const hw = TW / 2, hh = TH / 2;
   ctx.beginPath();
-  ctx.moveTo(sx, sy);
-  ctx.lineTo(sx + hw, sy + hh);
-  ctx.lineTo(sx, sy + TILE_H);
-  ctx.lineTo(sx - hw, sy + hh);
+  ctx.moveTo(p.x, p.y);
+  ctx.lineTo(p.x + hw, p.y + hh);
+  ctx.lineTo(p.x, p.y + TH);
+  ctx.lineTo(p.x - hw, p.y + hh);
   ctx.closePath();
-  ctx.fillStyle = topColor;
+  ctx.fillStyle = color;
   ctx.fill();
-  ctx.strokeStyle = "rgba(99,102,241,0.15)";
+  ctx.strokeStyle = "rgba(0,0,0,0.12)";
   ctx.lineWidth = 0.5;
   ctx.stroke();
+}
 
-  // Left face
-  ctx.beginPath();
-  ctx.moveTo(sx - hw, sy + hh);
-  ctx.lineTo(sx, sy + TILE_H);
-  ctx.lineTo(sx, sy + TILE_H + 12);
-  ctx.lineTo(sx - hw, sy + hh + 12);
-  ctx.closePath();
-  ctx.fillStyle = leftColor;
-  ctx.fill();
-  ctx.stroke();
-
-  // Right face
-  ctx.beginPath();
-  ctx.moveTo(sx, sy + TILE_H);
-  ctx.lineTo(sx + hw, sy + hh);
-  ctx.lineTo(sx + hw, sy + hh + 12);
-  ctx.lineTo(sx, sy + TILE_H + 12);
-  ctx.closePath();
-  ctx.fillStyle = rightColor;
-  ctx.fill();
-  ctx.stroke();
-
-  // Selection highlight
-  if (isSelected) {
-    ctx.strokeStyle = "rgba(99,102,241,0.8)";
-    ctx.lineWidth = 1.5;
+// ─── WALLS ────────────────────────────────────────────────────────────────────
+function drawBackWall(
+  ctx: CanvasRenderingContext2D,
+  zx: number, zy: number, zw: number,
+  color: string, colorTop: string,
+) {
+  for (let i = 0; i < zw; i++) {
+    const p1 = iso(zx + i, zy);
+    const p2 = iso(zx + i + 1, zy);
     ctx.beginPath();
-    ctx.moveTo(sx, sy);
-    ctx.lineTo(sx + hw, sy + hh);
-    ctx.lineTo(sx, sy + TILE_H);
-    ctx.lineTo(sx - hw, sy + hh);
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.lineTo(p2.x, p2.y - WALL_H);
+    ctx.lineTo(p1.x, p1.y - WALL_H);
     ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y - WALL_H);
+    ctx.lineTo(p2.x, p2.y - WALL_H);
+    ctx.lineTo(p2.x, p2.y - WALL_H + 5);
+    ctx.lineTo(p1.x, p1.y - WALL_H + 5);
+    ctx.closePath();
+    ctx.fillStyle = colorTop;
+    ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.18)";
+    ctx.lineWidth = 0.5;
     ctx.stroke();
   }
 }
 
-// ─── Chat Bubble ──────────────────────────────────────────────────────────────
-
-function drawChatBubble(ctx: CanvasRenderingContext2D, x: number, y: number, text: string) {
-  const fontSize = 10;
-  ctx.font = `${fontSize}px Inter, system-ui, sans-serif`;
-  const maxWidth = 140;
-  const lines: string[] = [];
-
-  // Word wrap
-  const words = text.split(" ");
-  let currentLine = "";
-  for (const word of words) {
-    const test = currentLine ? `${currentLine} ${word}` : word;
-    if (ctx.measureText(test).width > maxWidth) {
-      if (currentLine) lines.push(currentLine);
-      currentLine = word;
-    } else {
-      currentLine = test;
-    }
+function drawLeftWall(
+  ctx: CanvasRenderingContext2D,
+  zx: number, zy: number, zh: number,
+  color: string, colorTop: string,
+) {
+  for (let i = 0; i < zh; i++) {
+    const p1 = iso(zx, zy + i);
+    const p2 = iso(zx, zy + i + 1);
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.lineTo(p2.x, p2.y - WALL_H);
+    ctx.lineTo(p1.x, p1.y - WALL_H);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y - WALL_H);
+    ctx.lineTo(p2.x, p2.y - WALL_H);
+    ctx.lineTo(p2.x, p2.y - WALL_H + 5);
+    ctx.lineTo(p1.x, p1.y - WALL_H + 5);
+    ctx.closePath();
+    ctx.fillStyle = colorTop;
+    ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.18)";
+    ctx.lineWidth = 0.5;
+    ctx.stroke();
   }
-  if (currentLine) lines.push(currentLine);
-  lines.splice(4); // max 4 lines
+}
 
-  const lineHeight = 14;
-  const padX = 8;
-  const padY = 6;
-  const bw = Math.min(maxWidth + padX * 2, 160);
-  const bh = lines.length * lineHeight + padY * 2;
-  const bx = x - bw / 2;
-  const by = y - bh - 8;
-
-  // Bubble background
-  ctx.fillStyle = "rgba(15, 23, 42, 0.95)";
-  ctx.strokeStyle = "rgba(99, 102, 241, 0.6)";
-  ctx.lineWidth = 1;
+// ─── ISO BOX ──────────────────────────────────────────────────────────────────
+function drawBox(
+  ctx: CanvasRenderingContext2D,
+  gx: number, gy: number, bh: number,
+  topC: string, leftC: string, rightC: string,
+) {
+  const p = iso(gx, gy);
+  const hw = TW / 2, hh = TH / 2;
   ctx.beginPath();
-  ctx.roundRect(bx, by, bw, bh, 8);
+  ctx.moveTo(p.x, p.y - bh);
+  ctx.lineTo(p.x + hw, p.y + hh - bh);
+  ctx.lineTo(p.x, p.y + TH - bh);
+  ctx.lineTo(p.x - hw, p.y + hh - bh);
+  ctx.closePath();
+  ctx.fillStyle = topC;
   ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(p.x - hw, p.y + hh - bh);
+  ctx.lineTo(p.x, p.y + TH - bh);
+  ctx.lineTo(p.x, p.y + TH);
+  ctx.lineTo(p.x - hw, p.y + hh);
+  ctx.closePath();
+  ctx.fillStyle = leftC;
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(p.x + hw, p.y + hh - bh);
+  ctx.lineTo(p.x, p.y + TH - bh);
+  ctx.lineTo(p.x, p.y + TH);
+  ctx.lineTo(p.x + hw, p.y + hh);
+  ctx.closePath();
+  ctx.fillStyle = rightC;
+  ctx.fill();
+  ctx.strokeStyle = "rgba(0,0,0,0.2)";
+  ctx.lineWidth = 0.5;
+  ctx.stroke();
+}
+
+// ─── FURNITURE ────────────────────────────────────────────────────────────────
+function drawChair(ctx: CanvasRenderingContext2D, gx: number, gy: number, color: string) {
+  const p = iso(gx, gy);
+  drawBox(ctx, gx, gy, 10, lighten(color, 0.08), darken(color, 0.25), darken(color, 0.1));
+  ctx.beginPath();
+  ctx.moveTo(p.x - TW / 2 + 3, p.y + TH / 2 - 10);
+  ctx.lineTo(p.x, p.y + TH - 10);
+  ctx.lineTo(p.x, p.y + TH - 26);
+  ctx.lineTo(p.x - TW / 2 + 3, p.y + TH / 2 - 26);
+  ctx.closePath();
+  ctx.fillStyle = darken(color, 0.15);
+  ctx.fill();
+}
+
+function drawSofa(ctx: CanvasRenderingContext2D, gx: number, gy: number, color: string) {
+  const p = iso(gx, gy);
+  const hw = TW / 2, hh = TH / 2;
+  drawBox(ctx, gx, gy, 13, lighten(color, 0.06), darken(color, 0.28), darken(color, 0.12));
+  ctx.beginPath();
+  ctx.moveTo(p.x - hw + 2, p.y + hh - 13);
+  ctx.lineTo(p.x + hw - 2, p.y + hh - 13);
+  ctx.lineTo(p.x + hw - 2, p.y + hh - 27);
+  ctx.lineTo(p.x - hw + 2, p.y + hh - 27);
+  ctx.closePath();
+  ctx.fillStyle = lighten(color, 0.12);
+  ctx.fill();
+}
+
+function drawSofaL(ctx: CanvasRenderingContext2D, gx: number, gy: number, color: string) {
+  const p = iso(gx, gy);
+  const hw = TW / 2, hh = TH / 2;
+  drawBox(ctx, gx, gy, 15, lighten(color, 0.1), darken(color, 0.3), darken(color, 0.15));
+  ctx.beginPath();
+  ctx.moveTo(p.x - hw, p.y + hh - 15);
+  ctx.lineTo(p.x + hw, p.y + hh - 15);
+  ctx.lineTo(p.x + hw, p.y + hh - 30);
+  ctx.lineTo(p.x - hw, p.y + hh - 30);
+  ctx.closePath();
+  ctx.fillStyle = lighten(color, 0.06);
+  ctx.fill();
+  ctx.strokeStyle = "#b8960a";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(p.x - hw, p.y + hh - 30);
+  ctx.lineTo(p.x + hw, p.y + hh - 30);
+  ctx.stroke();
+}
+
+function drawTable(ctx: CanvasRenderingContext2D, gx: number, gy: number, color: string) {
+  drawBox(ctx, gx, gy, 9, lighten(color, 0.22), darken(color, 0.05), darken(color, 0.18));
+}
+
+function drawTableRound(ctx: CanvasRenderingContext2D, gx: number, gy: number, color: string) {
+  const p = iso(gx, gy);
+  const hw = TW / 2, hh = TH / 2;
+  ctx.fillStyle = darken(color, 0.1);
+  ctx.fillRect(p.x - 3, p.y + hh - 5, 6, 14);
+  ctx.beginPath();
+  ctx.ellipse(p.x, p.y + hh - 10, hw - 4, hh - 4, 0, 0, Math.PI * 2);
+  ctx.fillStyle = lighten(color, 0.2);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(0,0,0,0.2)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+function drawDesk(ctx: CanvasRenderingContext2D, gx: number, gy: number, color: string) {
+  drawBox(ctx, gx, gy, 11, lighten(color, 0.15), darken(color, 0.08), darken(color, 0.22));
+}
+
+function drawComputer(ctx: CanvasRenderingContext2D, gx: number, gy: number, _color: string) {
+  const p = iso(gx, gy);
+  const hh = TH / 2;
+  ctx.fillStyle = "#2c3e50";
+  ctx.fillRect(p.x - 2, p.y + hh - 6, 4, 8);
+  ctx.fillStyle = "#34495e";
+  ctx.fillRect(p.x - 7, p.y + hh + 1, 14, 3);
+  ctx.fillStyle = "#1a2035";
+  ctx.fillRect(p.x - 11, p.y + hh - 22, 22, 17);
+  ctx.fillStyle = "#0a0f20";
+  ctx.fillRect(p.x - 9, p.y + hh - 20, 18, 14);
+  ctx.fillStyle = "#00ffaa";
+  ctx.fillRect(p.x - 7, p.y + hh - 18, 14, 1);
+  ctx.fillStyle = "rgba(0,255,170,0.5)";
+  ctx.fillRect(p.x - 7, p.y + hh - 15, 10, 1);
+  ctx.fillRect(p.x - 7, p.y + hh - 12, 12, 1);
+  ctx.shadowColor = "#00ffaa";
+  ctx.shadowBlur = 6;
+  ctx.fillStyle = "rgba(0,255,170,0.08)";
+  ctx.fillRect(p.x - 9, p.y + hh - 20, 18, 14);
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = "transparent";
+}
+
+function drawCounter(ctx: CanvasRenderingContext2D, gx: number, gy: number, color: string) {
+  drawBox(ctx, gx, gy, 17, lighten(color, 0.12), darken(color, 0.05), darken(color, 0.22));
+}
+
+function drawShelf(ctx: CanvasRenderingContext2D, gx: number, gy: number, color: string) {
+  const p = iso(gx, gy);
+  const hw = TW / 2, hh = TH / 2;
+  ctx.beginPath();
+  ctx.moveTo(p.x - hw, p.y + hh);
+  ctx.lineTo(p.x, p.y + TH);
+  ctx.lineTo(p.x, p.y - 32);
+  ctx.lineTo(p.x - hw, p.y + hh - 32);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+  for (let i = 0; i < 3; i++) {
+    const sy = p.y + TH - 6 - i * 11;
+    ctx.fillStyle = lighten(color, 0.18);
+    ctx.fillRect(p.x - hw + 1, sy - 2, hw - 2, 2);
+    const itemColors = ["#c0392b", "#2980b9", "#f39c12"];
+    ctx.fillStyle = itemColors[i];
+    ctx.fillRect(p.x - hw + 3, sy - 8, 4, 6);
+    ctx.fillRect(p.x - hw + 9, sy - 7, 3, 5);
+  }
+  ctx.strokeStyle = "rgba(0,0,0,0.2)";
+  ctx.lineWidth = 0.5;
+  ctx.stroke();
+}
+
+function drawPlant(ctx: CanvasRenderingContext2D, gx: number, gy: number, color: string) {
+  const p = iso(gx, gy);
+  const hh = TH / 2;
+  ctx.fillStyle = "#7B3F00";
+  ctx.beginPath();
+  ctx.moveTo(p.x - 6, p.y + hh + 3);
+  ctx.lineTo(p.x + 6, p.y + hh + 3);
+  ctx.lineTo(p.x + 8, p.y + hh + 10);
+  ctx.lineTo(p.x - 8, p.y + hh + 10);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = "#2D5A0A";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(p.x, p.y + hh + 2);
+  ctx.lineTo(p.x, p.y + hh - 12);
+  ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.ellipse(p.x, p.y + hh - 17, 13, 8, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = lighten(color, 0.12);
+  ctx.beginPath();
+  ctx.ellipse(p.x - 7, p.y + hh - 14, 8, 5, -0.4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(p.x + 7, p.y + hh - 14, 8, 5, 0.4, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawTree(ctx: CanvasRenderingContext2D, gx: number, gy: number, _color: string) {
+  const p = iso(gx, gy);
+  const hh = TH / 2;
+  ctx.fillStyle = "#4A2808";
+  ctx.fillRect(p.x - 5, p.y + hh - 8, 10, 22);
+  ctx.fillStyle = "#5C3010";
+  ctx.fillRect(p.x - 3, p.y + hh - 8, 3, 22);
+  ctx.fillStyle = "#1A4A0A";
+  ctx.beginPath();
+  ctx.ellipse(p.x, p.y + hh - 18, 22, 13, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#205A10";
+  ctx.beginPath();
+  ctx.ellipse(p.x, p.y + hh - 30, 17, 11, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#2D7A1A";
+  ctx.beginPath();
+  ctx.ellipse(p.x, p.y + hh - 42, 11, 8, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "rgba(255,255,255,0.06)";
+  ctx.beginPath();
+  ctx.ellipse(p.x - 3, p.y + hh - 45, 5, 4, -0.3, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawArcade(ctx: CanvasRenderingContext2D, gx: number, gy: number, color: string, variant: number) {
+  const p = iso(gx, gy);
+  const hw = TW / 2, hh = TH / 2;
+  drawBox(ctx, gx, gy, 26, "#1a1a2e", darken(color, 0.4), darken(color, 0.28));
+  ctx.fillStyle = color;
+  ctx.fillRect(p.x - hw + 2, p.y + hh - 32, hw * 2 - 4, 6);
+  ctx.fillStyle = "#0a0a1a";
+  ctx.fillRect(p.x - hw + 3, p.y + hh - 25, hw * 2 - 6, 14);
+  const sc = [["#ff3333","#ffff00"],["#33aaff","#00ffff"],["#aa33ff","#ff00ff"],["#33ff44","#aaff00"]][variant % 4];
+  ctx.fillStyle = sc[0];
+  ctx.fillRect(p.x - hw + 5, p.y + hh - 23, hw * 2 - 10, 5);
+  ctx.fillStyle = sc[1];
+  ctx.fillRect(p.x - hw + 5, p.y + hh - 17, hw * 2 - 10, 3);
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 10;
+  ctx.strokeStyle = lighten(color, 0.4);
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(p.x - hw + 3, p.y + hh - 25, hw * 2 - 6, 14);
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = "transparent";
+  ctx.fillStyle = "#0d0d1a";
+  ctx.fillRect(p.x - hw + 3, p.y + hh - 11, hw * 2 - 6, 9);
+  ctx.fillStyle = "#888";
+  ctx.beginPath();
+  ctx.arc(p.x - 5, p.y + hh - 6, 3, 0, Math.PI * 2);
+  ctx.fill();
+  const btnC = ["#ff0000", "#00cc00", "#0000ff"];
+  for (let i = 0; i < 3; i++) {
+    ctx.fillStyle = btnC[i];
+    ctx.beginPath();
+    ctx.arc(p.x + 3 + i * 5, p.y + hh - 7, 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawFountain(ctx: CanvasRenderingContext2D, gx: number, gy: number, color: string) {
+  const p = iso(gx, gy);
+  const hw = TW / 2, hh = TH / 2;
+  ctx.beginPath();
+  ctx.ellipse(p.x, p.y + hh - 4, hw + 2, hh + 1, 0, 0, Math.PI * 2);
+  ctx.fillStyle = "#5A7A90";
+  ctx.fill();
+  ctx.strokeStyle = "#8AAABB";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(p.x, p.y + hh - 4, hw - 4, hh - 3, 0, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.fillStyle = "rgba(160,220,255,0.35)";
+  ctx.beginPath();
+  ctx.ellipse(p.x - 5, p.y + hh - 7, 8, 3, -0.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#9AACB8";
+  ctx.beginPath();
+  ctx.arc(p.x, p.y + hh - 12, 5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#B0C0CC";
+  ctx.fillRect(p.x - 2, p.y + hh - 20, 4, 9);
+  ctx.strokeStyle = "rgba(100,180,255,0.65)";
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y + hh - 22);
+    ctx.quadraticCurveTo(
+      p.x + Math.cos(a) * 8, p.y + hh - 28,
+      p.x + Math.cos(a) * 13, p.y + hh - 4 + Math.sin(a) * 6,
+    );
+    ctx.stroke();
+  }
+}
+
+function drawPond(ctx: CanvasRenderingContext2D, gx: number, gy: number, color: string) {
+  const p = iso(gx, gy);
+  const hw = TW / 2, hh = TH / 2;
+  ctx.beginPath();
+  ctx.ellipse(p.x, p.y + hh - 2, hw + 6, hh + 4, 0, 0, Math.PI * 2);
+  ctx.fillStyle = "#4A5A3A";
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(p.x, p.y + hh - 2, hw + 2, hh, 0, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.fillStyle = "#2A6A1A";
+  ctx.beginPath();
+  ctx.ellipse(p.x - 6, p.y + hh - 5, 5, 3, -0.3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(p.x + 7, p.y + hh - 1, 4, 2.5, 0.4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "rgba(150,220,255,0.3)";
+  ctx.beginPath();
+  ctx.ellipse(p.x - 2, p.y + hh - 6, 7, 2.5, 0.2, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawMissionBoard(ctx: CanvasRenderingContext2D, gx: number, gy: number, _color: string) {
+  const p = iso(gx, gy);
+  const hw = TW / 2, hh = TH / 2;
+  ctx.fillStyle = "#1A2A4A";
+  ctx.fillRect(p.x - hw, p.y + hh - 40, hw * 2, 36);
+  ctx.fillStyle = "#040C1C";
+  ctx.fillRect(p.x - hw + 3, p.y + hh - 37, hw * 2 - 6, 30);
+  ctx.shadowColor = "#00ff88";
+  ctx.shadowBlur = 6;
+  ctx.fillStyle = "#00ff88";
+  for (let i = 0; i < 4; i++) {
+    const lw = [26, 18, 22, 14][i];
+    ctx.fillRect(p.x - lw / 2, p.y + hh - 33 + i * 7, lw, 2);
+  }
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = "transparent";
+  ctx.fillStyle = "#00ccff";
+  ctx.font = "bold 5px monospace";
+  ctx.textAlign = "center";
+  ctx.fillText("● MISSIONS ●", p.x, p.y + hh - 40);
+}
+
+function drawSign(ctx: CanvasRenderingContext2D, gx: number, gy: number, color: string) {
+  const p = iso(gx, gy);
+  const hh = TH / 2;
+  ctx.fillStyle = "#555";
+  ctx.fillRect(p.x - 1, p.y + hh - 18, 2, 18);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.roundRect(p.x - 15, p.y + hh - 32, 30, 16, 3);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(255,255,255,0.25)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 5px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("NORYS", p.x, p.y + hh - 22);
+}
+
+function drawBench(ctx: CanvasRenderingContext2D, gx: number, gy: number, color: string) {
+  const p = iso(gx, gy);
+  const hw = TW / 2, hh = TH / 2;
+  ctx.beginPath();
+  ctx.moveTo(p.x, p.y + hh - 10);
+  ctx.lineTo(p.x + hw, p.y + TH - 10);
+  ctx.lineTo(p.x + hw, p.y + TH - 7);
+  ctx.lineTo(p.x, p.y + hh - 7);
+  ctx.closePath();
+  ctx.fillStyle = lighten(color, 0.1);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(p.x, p.y + hh - 10);
+  ctx.lineTo(p.x - hw, p.y + TH - 10);
+  ctx.lineTo(p.x - hw, p.y + TH - 7);
+  ctx.lineTo(p.x, p.y + hh - 7);
+  ctx.closePath();
+  ctx.fillStyle = darken(color, 0.08);
+  ctx.fill();
+  ctx.fillStyle = color;
+  ctx.fillRect(p.x - hw + 2, p.y + TH - 7, 4, 8);
+  ctx.fillRect(p.x + hw - 6, p.y + TH - 7, 4, 8);
+}
+
+function drawFurniture(ctx: CanvasRenderingContext2D, obj: FurnitureObj) {
+  const { gx, gy, type, color = "#666", variant = 0 } = obj;
+  switch (type) {
+    case "chair": drawChair(ctx, gx, gy, color); break;
+    case "sofa": drawSofa(ctx, gx, gy, color); break;
+    case "sofa_l": drawSofaL(ctx, gx, gy, color); break;
+    case "table": drawTable(ctx, gx, gy, color); break;
+    case "table_round": drawTableRound(ctx, gx, gy, color); break;
+    case "desk": drawDesk(ctx, gx, gy, color); break;
+    case "computer": drawComputer(ctx, gx, gy, color); break;
+    case "counter": drawCounter(ctx, gx, gy, color); break;
+    case "shelf": drawShelf(ctx, gx, gy, color); break;
+    case "plant": drawPlant(ctx, gx, gy, color); break;
+    case "tree": drawTree(ctx, gx, gy, color); break;
+    case "arcade": drawArcade(ctx, gx, gy, color, variant); break;
+    case "fountain": drawFountain(ctx, gx, gy, color); break;
+    case "pond": drawPond(ctx, gx, gy, color); break;
+    case "mission_board": drawMissionBoard(ctx, gx, gy, color); break;
+    case "sign": drawSign(ctx, gx, gy, color); break;
+    case "bench": drawBench(ctx, gx, gy, color); break;
+  }
+}
+
+// ─── HABBO CHARACTER ──────────────────────────────────────────────────────────
+function drawHabboCharacter(
+  ctx: CanvasRenderingContext2D,
+  cx: number, cy: number,
+  avatar: AvatarConfig,
+  name: string,
+  state: string,
+  t: number,
+  isSelected: boolean,
+) {
+  const bob = Math.sin(t * 0.04) * 1.5;
+  const headH = 20;
+  const bodyH = 36;
+  const totalH = headH + bodyH;
+  const by = cy - totalH + bob;
+
+  // Ground shadow
+  ctx.beginPath();
+  ctx.ellipse(cx, cy + 3, 12, 5, 0, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(0,0,0,0.3)";
+  ctx.fill();
+
+  // State glow
+  const glowC = STATE_GLOW[state] || "#7f8c8d";
+  ctx.shadowColor = glowC;
+  ctx.shadowBlur = isSelected ? 18 : 7;
+
+  // Selection ring
+  if (isSelected) {
+    ctx.strokeStyle = "#f1c40f";
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.ellipse(cx, by + totalH / 2, 22, 28, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // ── LEGS ──
+  const legSwing = Math.sin(t * 0.08) * 4;
+  ctx.fillStyle = avatar.bottomColor;
+  ctx.fillRect(cx - 6, by + headH + bodyH - 10 - legSwing, 5, 12);
+  ctx.fillRect(cx + 1, by + headH + bodyH - 10 + legSwing, 5, 12);
+  // Shoes
+  ctx.fillStyle = avatar.shoeColor;
+  ctx.beginPath();
+  ctx.roundRect(cx - 8, by + headH + bodyH + 1 - legSwing, 8, 4, 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.roundRect(cx + 1, by + headH + bodyH + 1 + legSwing, 8, 4, 2);
+  ctx.fill();
+
+  // ── BODY ──
+  ctx.fillStyle = avatar.topColor;
+  ctx.beginPath();
+  ctx.roundRect(cx - 8, by + headH - 2, 16, bodyH - 8, [2, 2, 4, 4]);
+  ctx.fill();
+  ctx.fillStyle = darken(avatar.topColor, 0.15);
+  ctx.fillRect(cx + 2, by + headH, 4, bodyH - 10);
+
+  // ── ARMS ──
+  const armSwing = Math.sin(t * 0.07) * 4;
+  ctx.fillStyle = avatar.topColor;
+  ctx.fillRect(cx - 12, by + headH - 1 + armSwing, 4, bodyH - 12);
+  ctx.fillRect(cx + 8, by + headH - 1 - armSwing, 4, bodyH - 12);
+  ctx.fillStyle = avatar.skinTone;
+  ctx.beginPath();
+  ctx.arc(cx - 10, by + headH + bodyH - 14 + armSwing, 3.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cx + 10, by + headH + bodyH - 14 - armSwing, 3.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = "transparent";
+
+  // ── HEAD ──
+  ctx.fillStyle = avatar.skinTone;
+  ctx.beginPath();
+  ctx.roundRect(cx - 10, by, 20, headH + 3, [8, 8, 4, 4]);
+  ctx.fill();
+
+  // ── HAIR ──
+  ctx.fillStyle = avatar.hairColor;
+  ctx.beginPath();
+  ctx.roundRect(cx - 11, by - 5, 22, 11, [7, 7, 0, 0]);
+  ctx.fill();
+  if (avatar.hairStyle === "spiky") {
+    for (let i = 0; i < 5; i++) {
+      ctx.beginPath();
+      ctx.moveTo(cx - 9 + i * 4, by - 5);
+      ctx.lineTo(cx - 7 + i * 4, by - 13);
+      ctx.lineTo(cx - 5 + i * 4, by - 5);
+      ctx.fillStyle = avatar.hairColor;
+      ctx.fill();
+    }
+  } else if (avatar.hairStyle === "long") {
+    ctx.fillStyle = avatar.hairColor;
+    ctx.fillRect(cx - 11, by - 5, 6, 20);
+    ctx.fillRect(cx + 5, by - 5, 6, 18);
+  }
+
+  // ── EYES ──
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(cx - 8, by + 7, 6, 5);
+  ctx.fillRect(cx + 2, by + 7, 6, 5);
+  ctx.fillStyle = avatar.eyeColor;
+  ctx.fillRect(cx - 7, by + 8, 4, 4);
+  ctx.fillRect(cx + 3, by + 8, 4, 4);
+  ctx.fillStyle = "#000";
+  ctx.fillRect(cx - 6, by + 9, 2, 2);
+  ctx.fillRect(cx + 4, by + 9, 2, 2);
+  ctx.fillStyle = avatar.hairColor;
+  ctx.fillRect(cx - 8, by + 5, 6, 1);
+  ctx.fillRect(cx + 2, by + 5, 6, 1);
+  ctx.fillStyle = darken(avatar.skinTone, 0.25);
+  ctx.fillRect(cx - 3, by + 14, 6, 2);
+
+  // ── ACCESSORY ──
+  if (avatar.accessory === "glasses") {
+    ctx.strokeStyle = "#444";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(cx - 8, by + 6, 6, 5);
+    ctx.strokeRect(cx + 2, by + 6, 6, 5);
+    ctx.beginPath();
+    ctx.moveTo(cx - 2, by + 8);
+    ctx.lineTo(cx + 2, by + 8);
+    ctx.stroke();
+  } else if (avatar.accessory === "hat") {
+    ctx.fillStyle = darken(avatar.hairColor, 0.1);
+    ctx.fillRect(cx - 12, by - 4, 24, 5);
+    ctx.fillRect(cx - 8, by - 14, 16, 11);
+  } else if (avatar.accessory === "headset") {
+    ctx.strokeStyle = "#444";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, by + 2, 13, Math.PI * 1.1, Math.PI * 1.9);
+    ctx.stroke();
+    ctx.fillStyle = "#e74c3c";
+    ctx.beginPath();
+    ctx.arc(cx - 13, by + 4, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(cx + 13, by + 4, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // ── BADGE ──
+  const badgeC = CATEGORY_BADGE_COLORS[avatar.badge] || CATEGORY_BADGE_COLORS.default;
+  ctx.beginPath();
+  ctx.arc(cx + 8, by - 4, 5, 0, Math.PI * 2);
+  ctx.fillStyle = badgeC;
+  ctx.fill();
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 1;
   ctx.stroke();
 
-  // Bubble tail
-  ctx.fillStyle = "rgba(15, 23, 42, 0.95)";
-  ctx.beginPath();
-  ctx.moveTo(x - 5, by + bh);
-  ctx.lineTo(x, by + bh + 6);
-  ctx.lineTo(x + 5, by + bh);
-  ctx.fill();
+  // ── NAME TAG ──
+  if (name) {
+    ctx.font = "bold 7px 'Inter', sans-serif";
+    ctx.textAlign = "center";
+    const tw = ctx.measureText(name).width;
+    ctx.fillStyle = "rgba(0,0,0,0.75)";
+    ctx.beginPath();
+    ctx.roundRect(cx - tw / 2 - 4, by - 20, tw + 8, 11, 4);
+    ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.fillText(name, cx, by - 11);
+  }
+}
 
-  // Text
-  ctx.fillStyle = "#e2e8f0";
-  ctx.font = `${fontSize}px Inter, system-ui, sans-serif`;
-  lines.forEach((line, i) => {
-    ctx.fillText(line, bx + padX, by + padY + (i + 1) * lineHeight - 2);
+// ─── ZONE LABEL ───────────────────────────────────────────────────────────────
+function drawZoneLabel(ctx: CanvasRenderingContext2D, zone: ZoneDef) {
+  const p = iso(zone.gx, zone.gy);
+  const bx = p.x - 14;
+  const by = p.y - WALL_H - 24;
+  ctx.beginPath();
+  ctx.arc(bx, by, 13, 0, Math.PI * 2);
+  ctx.fillStyle = zone.badgeColor;
+  ctx.fill();
+  ctx.strokeStyle = "rgba(255,255,255,0.7)";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 9px 'Inter', sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(String(zone.id), bx, by + 3);
+  ctx.font = "700 8px 'Inter', sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,0.9)";
+  ctx.fillText(zone.label, bx, by + 17);
+}
+
+// ─── BUILD ZONE RENDER ITEMS ──────────────────────────────────────────────────
+function buildZoneItems(zone: ZoneDef): RenderItem[] {
+  const items: RenderItem[] = [];
+
+  items.push({
+    sortKey: zone.gx + zone.gy - 0.6,
+    render: (ctx) =>
+      drawBackWall(ctx, zone.gx, zone.gy, zone.w, zone.wallColor, lighten(zone.wallColor, 0.12)),
+  });
+
+  items.push({
+    sortKey: zone.gx + zone.gy - 0.5,
+    render: (ctx) =>
+      drawLeftWall(ctx, zone.gx, zone.gy, zone.h, zone.wallColorL, lighten(zone.wallColorL, 0.1)),
+  });
+
+  for (let gx = zone.gx; gx < zone.gx + zone.w; gx++) {
+    for (let gy = zone.gy; gy < zone.gy + zone.h; gy++) {
+      const col = (gx + gy) % 2 === 0 ? zone.floorColor : zone.floorDark;
+      const sk = gx + gy;
+      items.push({ sortKey: sk, render: (ctx) => drawTile(ctx, gx, gy, col) });
+    }
+  }
+
+  for (const obj of zone.objects) {
+    items.push({
+      sortKey: obj.gx + obj.gy + 0.1,
+      render: (ctx) => drawFurniture(ctx, obj),
+    });
+  }
+
+  return items;
+}
+
+// ─── EXPORTS ──────────────────────────────────────────────────────────────────
+export function defaultAvatarForCategory(category: string, seed: number = 0): AvatarConfig {
+  const pick = <T>(arr: T[], mul = 1): T => arr[Math.abs((seed * mul) % arr.length)];
+  const hairStyles = ["default", "spiky", "long", "short"];
+  const accessories = ["none", "glasses", "headset", "hat", "none", "none"];
+  const catColors: Record<string, { top: string; bottom: string }> = {
+    helpdesk: { top: "#c0392b", bottom: "#1a2035" },
+    hr:       { top: "#2980b9", bottom: "#1a3050" },
+    documents:{ top: "#d35400", bottom: "#3a2800" },
+    sales:    { top: "#8e44ad", bottom: "#2a1040" },
+    support:  { top: "#27ae60", bottom: "#0a2a18" },
+    devops:   { top: "#16a085", bottom: "#1a2a30" },
+    default:  { top: "#7f8c8d", bottom: "#2c3e50" },
+  };
+  const colors = catColors[category] || catColors.default;
+  return {
+    skinTone: pick(SKIN_TONES, 2),
+    hairStyle: hairStyles[seed % hairStyles.length],
+    hairColor: pick(HAIR_COLORS, 5),
+    eyeStyle: "round",
+    eyeColor: pick(EYE_COLORS, 3),
+    topStyle: "shirt",
+    topColor: colors.top,
+    bottomStyle: "pants",
+    bottomColor: colors.bottom,
+    shoeStyle: "sneakers",
+    shoeColor: pick(SHOE_COLORS, 4),
+    accessory: accessories[(seed * 2) % accessories.length],
+    badge: category,
+  };
+}
+
+export function generateWorldAgents(agentList: any[]): WorldAgent[] {
+  return agentList.map((agent, i) => {
+    const category = agent.category || "default";
+    const zoneName = CATEGORY_ZONE[category] || "jardin";
+    const zone = ZONES.find((z) => z.name === zoneName) ?? ZONES[ZONES.length - 1];
+    const ox = (i * 3 + 2) % Math.max(1, zone.w - 2);
+    const oy = (i * 2 + 2) % Math.max(1, zone.h - 2);
+    return {
+      id: agent.id ?? `agent-${i}`,
+      name: agent.name ?? `Agent ${i + 1}`,
+      category,
+      state: agent.state ?? "idle",
+      avatar: defaultAvatarForCategory(category, i),
+      tileX: zone.gx + 1 + ox,
+      tileY: zone.gy + 1 + oy,
+      chatBubble: agent.chatBubble,
+      taskProgress: agent.taskProgress,
+    };
   });
 }
 
-// ─── Orchestrateur Avatar ─────────────────────────────────────────────────────
-
-function drawOrchestrateur(ctx: CanvasRenderingContext2D, x: number, y: number, t: number) {
-  const s = 1.8;
-  ctx.save();
-  ctx.translate(x, y);
-
-  // Throne glow rings
-  for (let r = 0; r < 3; r++) {
-    const radius = 48 + r * 14;
-    const alpha = 0.3 - r * 0.08;
-    ctx.strokeStyle = `rgba(218, 165, 32, ${alpha + Math.sin(t * 2 + r) * 0.05})`;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.arc(0, 10, radius, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-
-  // Imperial cape (behind body)
-  ctx.fillStyle = "#1a0050";
-  ctx.strokeStyle = "#DAA520";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(-14 * s, -5 * s);
-  ctx.bezierCurveTo(-20 * s, 10 * s, -18 * s, 25 * s, -12 * s, 30 * s);
-  ctx.lineTo(12 * s, 30 * s);
-  ctx.bezierCurveTo(18 * s, 25 * s, 20 * s, 10 * s, 14 * s, -5 * s);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-
-  // Body
-  ctx.fillStyle = "#0d0d2b";
-  ctx.strokeStyle = "#DAA520";
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.roundRect(-10 * s, -6 * s, 20 * s, 16 * s, 2 * s);
-  ctx.fill();
-  ctx.stroke();
-
-  // Chest armor
-  ctx.fillStyle = "#1a1a4e";
-  ctx.strokeStyle = "#DAA520";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(-8 * s, -5 * s);
-  ctx.lineTo(0, 0);
-  ctx.lineTo(8 * s, -5 * s);
-  ctx.lineTo(8 * s, 4 * s);
-  ctx.lineTo(0, 8 * s);
-  ctx.lineTo(-8 * s, 4 * s);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-
-  // Gold badge
-  ctx.fillStyle = "#DAA520";
-  ctx.beginPath();
-  ctx.arc(0, 1 * s, 3 * s, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Shoulders
-  for (const side of [-1, 1]) {
-    ctx.fillStyle = "#1a1a4e";
-    ctx.strokeStyle = "#DAA520";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.roundRect(side * 9 * s, -7 * s, side * 7 * s, 7 * s, 2 * s);
-    ctx.fill();
-    ctx.stroke();
-    // Spikes
-    for (let sp = 0; sp < 3; sp++) {
-      ctx.fillStyle = "#DAA520";
-      ctx.beginPath();
-      ctx.moveTo(side * (11 + sp * 1.5) * s, -8 * s);
-      ctx.lineTo(side * (12 + sp * 1.5) * s, -12 * s);
-      ctx.lineTo(side * (13 + sp * 1.5) * s, -8 * s);
-      ctx.fill();
-    }
-  }
-
-  // Neck
-  ctx.fillStyle = "#c8a882";
-  ctx.fillRect(-4 * s, -10 * s, 8 * s, 5 * s);
-
-  // Head
-  ctx.fillStyle = "#0d0d1a";
-  ctx.strokeStyle = "#DAA520";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.roundRect(-12 * s, -28 * s, 24 * s, 20 * s, 3 * s);
-  ctx.fill();
-  ctx.stroke();
-
-  // Visor (gold, pulsing)
-  const visorAlpha = 0.85 + Math.sin(t * 3) * 0.15;
-  ctx.fillStyle = `rgba(218, 165, 32, ${visorAlpha})`;
-  ctx.shadowColor = "#FFD700";
-  ctx.shadowBlur = 12;
-  ctx.fillRect(-10 * s, -22 * s, 20 * s, 5 * s);
-  ctx.shadowBlur = 0;
-
-  // Crown
-  ctx.fillStyle = "#DAA520";
-  ctx.strokeStyle = "#FFD700";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(-12 * s, -28 * s);
-  for (let i = 0; i <= 6; i++) {
-    const px = -12 * s + i * 4 * s;
-    ctx.lineTo(px, i % 2 === 0 ? -34 * s : -30 * s);
-  }
-  ctx.lineTo(12 * s, -28 * s);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-
-  // Crown gems
-  const gemColors = ["#FF4444", "#FFD700", "#4444FF", "#44FF44", "#FF44FF", "#44FFFF"];
-  for (let i = 0; i < 6; i++) {
-    ctx.fillStyle = gemColors[i];
-    ctx.shadowColor = gemColors[i];
-    ctx.shadowBlur = 6;
-    ctx.beginPath();
-    ctx.arc(-10 * s + i * 4 * s, -31 * s, 2 * s, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.shadowBlur = 0;
-
-  // Command orb (floating)
-  const orbY = Math.sin(t * 2) * 3;
-  ctx.fillStyle = "rgba(99,102,241,0.9)";
-  ctx.shadowColor = "#6366f1";
-  ctx.shadowBlur = 20;
-  ctx.beginPath();
-  ctx.arc(22 * s, -15 * s + orbY, 6 * s, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "rgba(255,255,255,0.3)";
-  ctx.beginPath();
-  ctx.arc(20 * s, -17 * s + orbY, 2 * s, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.shadowBlur = 0;
-
-  ctx.restore();
-}
-
-// ─── State indicator ──────────────────────────────────────────────────────────
-
-function drawStateIndicator(ctx: CanvasRenderingContext2D, x: number, y: number, state: WorldAgent["state"], t: number) {
-  const radius = 5;
-  const stateColors: Record<string, string> = {
-    idle:     "#4B5563",
-    thinking: "#F59E0B",
-    acting:   "#3B82F6",
-    error:    "#EF4444",
-    done:     "#10B981",
-    walking:  "#8B5CF6",
-  };
-  const color = stateColors[state] ?? "#4B5563";
-  const pulse = state === "idle" ? 1 : 1 + Math.sin(t * 4) * 0.3;
-
-  ctx.fillStyle = color;
-  ctx.shadowColor = color;
-  ctx.shadowBlur = state !== "idle" ? 8 : 0;
-  ctx.beginPath();
-  ctx.arc(x, y, radius * pulse, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.shadowBlur = 0;
-}
-
-// ─── World Layout ─────────────────────────────────────────────────────────────
-
-const GRID_COLS = 9;
-const GRID_ROWS = 9;
-const CENTER_X = 4;
-const CENTER_Y = 4;
-
-// Agent tile positions (preset grid layout)
-const AGENT_TILE_POSITIONS = [
-  { tx: 1, ty: 1 }, { tx: 3, ty: 1 }, { tx: 5, ty: 1 }, { tx: 7, ty: 1 },
-  { tx: 1, ty: 3 }, { tx: 7, ty: 3 },
-  { tx: 1, ty: 5 }, { tx: 7, ty: 5 },
-  { tx: 1, ty: 7 }, { tx: 3, ty: 7 }, { tx: 5, ty: 7 }, { tx: 7, ty: 7 },
-];
-
-// Workstation positions
-const WORKSTATION_TILES = new Set([
-  "0:0", "1:0", "2:0", "3:0", "4:0", "5:0", "6:0", "7:0", "8:0",
-  "0:2", "2:2", "4:2", "6:2", "8:2",
-  "0:4", "2:4", "6:4", "8:4",
-  "0:6", "2:6", "4:6", "6:6", "8:6",
-  "0:8", "1:8", "2:8", "3:8", "4:8", "5:8", "6:8", "7:8", "8:8",
-]);
-
-// ─── Main Component ───────────────────────────────────────────────────────────
-
+// ─── HABBO WORLD COMPONENT ────────────────────────────────────────────────────
 interface HabboWorldProps {
   agents: WorldAgent[];
-  selectedAgentId?: string;
-  onSelectAgent?: (agentId: string) => void;
-  onOpenAgent?: (agentId: string) => void;
+  onAgentClick?: (agent: WorldAgent) => void;
+  onSelectAgent?: (id: string) => void;
+  onOpenAgent?: (id: string) => void;
+  selectedAgentId?: string | null;
+  className?: string;
 }
 
-export function HabboWorld({ agents, selectedAgentId, onSelectAgent, onOpenAgent }: HabboWorldProps) {
+export function HabboWorld({
+  agents,
+  onAgentClick,
+  onSelectAgent,
+  onOpenAgent,
+  selectedAgentId,
+  className,
+}: HabboWorldProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const animFrameRef = useRef<number>(0);
-  const walkPhasesRef = useRef<Map<string, number>>(new Map());
-  const lastClickRef = useRef<{ id: string; time: number } | null>(null);
+  const animRef = useRef<number>(0);
+  const tRef = useRef<number>(0);
+  const panRef = useRef({ x: 0, y: 0 });
+  const zoomRef = useRef(0.55);
+  const dragRef = useRef({ active: false, startX: 0, startY: 0, px: 0, py: 0 });
+  const [size, setSize] = useState({ w: 1200, h: 700 });
+  const worldItemsRef = useRef<RenderItem[]>([]);
 
-  // Canvas offset (for centering the world)
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
-  const offsetRef = useRef({ x: 0, y: 0 });
-
-  // Pan state
-  const isDraggingRef = useRef(false);
-  const dragStartRef = useRef({ x: 0, y: 0 });
-
-  const render = useCallback((t: number) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const W = canvas.width;
-    const H = canvas.height;
-    const off = offsetRef.current;
-
-    ctx.clearRect(0, 0, W, H);
-
-    // Background gradient
-    const bg = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, W * 0.7);
-    bg.addColorStop(0, "#0a0f1e");
-    bg.addColorStop(1, "#050810");
-    ctx.fillStyle = bg;
-    ctx.fillRect(0, 0, W, H);
-
-    // World origin = center of canvas
-    const worldOriginX = W / 2 + off.x;
-    const worldOriginY = H / 2 - ((GRID_ROWS / 2) * TILE_H) + off.y;
-
-    // ── Draw tiles ──────────────────────────────────────────────────────────
-    for (let ty = 0; ty < GRID_ROWS; ty++) {
-      for (let tx = 0; tx < GRID_COLS; tx++) {
-        const { x: sx, y: sy } = tileToScreen(tx, ty);
-        const isWorkstation = WORKSTATION_TILES.has(`${tx}:${ty}`);
-        const isThroneArea = tx === CENTER_X && ty === CENTER_Y;
-        const isSelected = agents.some(
-          (a) => a.tileX === tx && a.tileY === ty && a.id === selectedAgentId
-        );
-
-        drawTile(
-          ctx,
-          worldOriginX + sx,
-          worldOriginY + sy,
-          isThroneArea ? "throne" : isWorkstation ? "workstation" : "floor",
-          isSelected
-        );
-
-        // Grid label (debug — remove in production)
-        // ctx.fillStyle = "rgba(99,102,241,0.3)";
-        // ctx.font = "7px monospace";
-        // ctx.fillText(`${tx},${ty}`, worldOriginX + sx - 8, worldOriginY + sy + TILE_H / 2);
-      }
-    }
-
-    // ── Orchestrateur ───────────────────────────────────────────────────────
-    const orchScreen = tileToScreen(CENTER_X, CENTER_Y);
-    drawOrchestrateur(
-      ctx,
-      worldOriginX + orchScreen.x,
-      worldOriginY + orchScreen.y + TILE_H / 2 - 12,
-      t / 1000
-    );
-
-    // ── Agents ─────────────────────────────────────────────────────────────
-    // Sort by Y so front agents render on top
-    const sortedAgents = [...agents].sort((a, b) => a.tileY - b.tileY || a.tileX - b.tileX);
-
-    for (const agent of sortedAgents) {
-      const { x: sx, y: sy } = tileToScreen(agent.tileX, agent.tileY);
-      const screenX = worldOriginX + sx;
-      const screenY = worldOriginY + sy + TILE_H / 2;
-
-      // Walk phase
-      if (agent.state === "walking") {
-        const prev = walkPhasesRef.current.get(agent.id) ?? 0;
-        walkPhasesRef.current.set(agent.id, prev + 1);
-      } else {
-        walkPhasesRef.current.set(agent.id, 0);
-      }
-      const walkPhase = walkPhasesRef.current.get(agent.id) ?? 0;
-
-      const isSelected = agent.id === selectedAgentId;
-      const stateGlow = STATE_GLOW[agent.state];
-
-      // Selection ring under agent
-      if (isSelected) {
-        ctx.strokeStyle = "rgba(99,102,241,0.8)";
-        ctx.lineWidth = 2;
-        ctx.setLineDash([4, 4]);
-        ctx.beginPath();
-        ctx.ellipse(screenX, screenY + 8, 20, 8, 0, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
-
-      // Draw avatar
-      drawAvatar(ctx, screenX, screenY - 20, agent.avatar, 0.9, "front", walkPhase, stateGlow);
-
-      // State dot
-      drawStateIndicator(ctx, screenX + 14, screenY - 38, agent.state, t / 1000);
-
-      // Agent name
-      ctx.fillStyle = isSelected ? "#a5b4fc" : "rgba(203, 213, 225, 0.8)";
-      ctx.font = `bold 9px Inter, sans-serif`;
-      ctx.textAlign = "center";
-      ctx.fillText(agent.name.split(" ")[0], screenX, screenY + 2);
-
-      // Category icon
-      ctx.font = "11px serif";
-      ctx.fillText(CATEGORY_ICONS[agent.category] ?? "🤖", screenX - 18, screenY - 48);
-
-      // Task progress bar (if running)
-      if (agent.taskProgress !== undefined && agent.taskProgress > 0) {
-        const barW = 36;
-        const barH = 3;
-        const barX = screenX - barW / 2;
-        const barY = screenY + 5;
-        ctx.fillStyle = "rgba(15, 23, 42, 0.8)";
-        ctx.fillRect(barX, barY, barW, barH);
-        ctx.fillStyle = agent.state === "error" ? "#EF4444" : "#6366F1";
-        ctx.fillRect(barX, barY, barW * (agent.taskProgress / 100), barH);
-      }
-
-      // Chat bubble
-      if (agent.chatBubble && Date.now() < agent.chatBubble.expiresAt) {
-        drawChatBubble(ctx, screenX, screenY - 52, agent.chatBubble.text);
-      }
-    }
-
-    // ── HUD: title ─────────────────────────────────────────────────────────
-    ctx.textAlign = "left";
-    ctx.font = "bold 12px Inter, sans-serif";
-    ctx.fillStyle = "rgba(99,102,241,0.7)";
-    ctx.fillText("NORYS WORLD", 12, 22);
-    ctx.font = "10px Inter, sans-serif";
-    ctx.fillStyle = "rgba(99,102,241,0.4)";
-    ctx.fillText(`${agents.length} agents actifs`, 12, 36);
-
-  }, [agents, selectedAgentId]);
-
-  // ── Animation Loop ────────────────────────────────────────────────────────
-
+  // Build static world
   useEffect(() => {
-    let running = true;
-    const loop = (t: number) => {
-      if (!running) return;
-      render(t);
-      animFrameRef.current = requestAnimationFrame(loop);
-    };
-    animFrameRef.current = requestAnimationFrame(loop);
-    return () => {
-      running = false;
-      cancelAnimationFrame(animFrameRef.current);
-    };
-  }, [render]);
+    const items: RenderItem[] = [];
+    for (const zone of ZONES) items.push(...buildZoneItems(zone));
+    items.sort((a, b) => a.sortKey - b.sortKey);
+    worldItemsRef.current = items;
+  }, []);
 
-  // ── Canvas resize ─────────────────────────────────────────────────────────
-
+  // Resize observer
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const parent = canvas.parentElement;
     if (!parent) return;
-    const ro = new ResizeObserver(() => {
-      canvas.width = parent.clientWidth;
-      canvas.height = parent.clientHeight;
+    const ro = new ResizeObserver((entries) => {
+      for (const e of entries) {
+        const { width, height } = e.contentRect;
+        if (width > 0 && height > 0) setSize({ w: Math.round(width), h: Math.round(height) });
+      }
     });
     ro.observe(parent);
-    canvas.width = parent.clientWidth;
-    canvas.height = parent.clientHeight;
+    const r = parent.getBoundingClientRect();
+    if (r.width > 0) setSize({ w: Math.round(r.width), h: Math.round(r.height) });
     return () => ro.disconnect();
   }, []);
 
-  // ── Click / Double-click ──────────────────────────────────────────────────
-
-  const handleClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (isDraggingRef.current) return;
+  // Wheel zoom
+  useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      zoomRef.current = Math.max(0.25, Math.min(2.5, zoomRef.current * (e.deltaY > 0 ? 0.9 : 1.1)));
+    };
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", onWheel);
+  }, []);
 
+  const hitTest = useCallback((cx: number, cy: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
+    const wx = (cx - rect.left - panRef.current.x) / zoomRef.current;
+    const wy = (cy - rect.top - panRef.current.y) / zoomRef.current;
+    for (const ag of agents) {
+      const p = iso(ag.tileX, ag.tileY);
+      const dx = wx - p.x, dy = wy - (p.y - 28);
+      if (dx * dx + dy * dy < 25 * 25) return ag;
+    }
+    return null;
+  }, [agents]);
 
-    const off = offsetRef.current;
-    const worldOriginX = canvas.width / 2 + off.x;
-    const worldOriginY = canvas.height / 2 - ((GRID_ROWS / 2) * TILE_H) + off.y;
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    dragRef.current = { active: true, startX: e.clientX, startY: e.clientY, px: panRef.current.x, py: panRef.current.y };
+  }, []);
 
-    // Hit test agents (reversed sort for top-first click)
-    const sorted = [...agents].sort((a, b) => b.tileY - a.tileY);
-    for (const agent of sorted) {
-      const { x: sx, y: sy } = tileToScreen(agent.tileX, agent.tileY);
-      const ax = worldOriginX + sx;
-      const ay = worldOriginY + sy + TILE_H / 2 - 20;
-      const dx = mouseX - ax;
-      const dy = mouseY - ay;
-      if (dx * dx + dy * dy < 28 * 28) {
-        const now = Date.now();
-        const last = lastClickRef.current;
-        if (last?.id === agent.id && now - last.time < 400) {
-          onOpenAgent?.(agent.id);
-        } else {
-          onSelectAgent?.(agent.id);
-        }
-        lastClickRef.current = { id: agent.id, time: now };
-        return;
+  const onMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!dragRef.current.active) return;
+    panRef.current = {
+      x: dragRef.current.px + e.clientX - dragRef.current.startX,
+      y: dragRef.current.py + e.clientY - dragRef.current.startY,
+    };
+  }, []);
+
+  const onMouseUp = useCallback((e: React.MouseEvent) => {
+    const d = dragRef.current;
+    const moved = Math.abs(e.clientX - d.startX) + Math.abs(e.clientY - d.startY);
+    d.active = false;
+    if (moved < 5) {
+      const ag = hitTest(e.clientX, e.clientY);
+      if (ag) {
+        onAgentClick?.(ag);
+        onSelectAgent?.(ag.id);
       }
     }
-    onSelectAgent?.("");
-    lastClickRef.current = null;
-  }, [agents, onSelectAgent, onOpenAgent]);
+  }, [hitTest, onAgentClick, onSelectAgent]);
 
-  // ── Pan (drag) ────────────────────────────────────────────────────────────
+  // Render loop
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
 
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    isDraggingRef.current = false;
-    dragStartRef.current = { x: e.clientX - offsetRef.current.x, y: e.clientY - offsetRef.current.y };
-  }, []);
+    function render() {
+      if (!canvas || !ctx) return;
+      tRef.current += 1;
+      const t = tRef.current;
 
-  const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (e.buttons !== 1) return;
-    isDraggingRef.current = true;
-    const nx = e.clientX - dragStartRef.current.x;
-    const ny = e.clientY - dragStartRef.current.y;
-    offsetRef.current = { x: nx, y: ny };
-    setOffset({ x: nx, y: ny });
-  }, []);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Background
+      const bg = ctx.createLinearGradient(0, 0, 0, canvas.height);
+      bg.addColorStop(0, "#060c1a");
+      bg.addColorStop(0.6, "#0d1528");
+      bg.addColorStop(1, "#161f38");
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Stars
+      for (let i = 0; i < 70; i++) {
+        const sx = ((i * 137 + 23) % canvas.width);
+        const sy = ((i * 97 + 11) % (canvas.height * 0.4));
+        const alpha = 0.15 + (i % 6) * 0.08;
+        ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+        ctx.fillRect(sx, sy, 1, 1);
+      }
+
+      ctx.save();
+      ctx.translate(panRef.current.x, panRef.current.y);
+      ctx.scale(zoomRef.current, zoomRef.current);
+
+      // Render world (depth-sorted)
+      for (const item of worldItemsRef.current) item.render(ctx);
+
+      // Render agents
+      const sorted = [...agents].sort((a, b) => (a.tileX + a.tileY) - (b.tileX + b.tileY));
+      for (const ag of sorted) {
+        const p = iso(ag.tileX, ag.tileY);
+        const apy = p.y + TH / 2;
+        drawHabboCharacter(ctx, p.x, apy, ag.avatar, ag.name, ag.state, t, ag.id === selectedAgentId);
+
+        // Chat bubble
+        if (ag.chatBubble) {
+          ctx.font = "8px 'Inter', sans-serif";
+          ctx.textAlign = "center";
+          const bw = Math.min(ctx.measureText(ag.chatBubble).width + 10, 90);
+          const bx = p.x, by2 = apy - 98;
+          ctx.fillStyle = "rgba(255,255,255,0.93)";
+          ctx.beginPath();
+          ctx.roundRect(bx - bw / 2, by2 - 14, bw, 14, 5);
+          ctx.fill();
+          ctx.fillStyle = "#1a1a2e";
+          const txt = ag.chatBubble.length > 22 ? ag.chatBubble.slice(0, 22) + "…" : ag.chatBubble;
+          ctx.fillText(txt, bx, by2 - 3);
+          ctx.fillStyle = "rgba(255,255,255,0.93)";
+          ctx.beginPath();
+          ctx.moveTo(bx - 4, by2);
+          ctx.lineTo(bx + 4, by2);
+          ctx.lineTo(bx, by2 + 6);
+          ctx.fill();
+        }
+
+        // Progress bar
+        if (ag.state === "working" && ag.taskProgress !== undefined) {
+          const bx = p.x - 16, by2 = apy - 78;
+          ctx.fillStyle = "rgba(0,0,0,0.55)";
+          ctx.fillRect(bx, by2, 32, 4);
+          ctx.fillStyle = "#f39c12";
+          ctx.fillRect(bx, by2, 32 * Math.min(1, ag.taskProgress), 4);
+        }
+      }
+
+      // Zone labels (always on top)
+      for (const zone of ZONES) {
+        if (zone.id !== 7) drawZoneLabel(ctx, zone);
+      }
+
+      ctx.restore();
+      animRef.current = requestAnimationFrame(render);
+    }
+
+    animRef.current = requestAnimationFrame(render);
+    return () => cancelAnimationFrame(animRef.current);
+  }, [agents, selectedAgentId, size]);
 
   return (
     <canvas
       ref={canvasRef}
-      style={{ display: "block", width: "100%", height: "100%", cursor: "pointer" }}
-      onClick={handleClick}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
+      width={size.w}
+      height={size.h}
+      className={className}
+      style={{ display: "block", width: "100%", height: "100%", cursor: "grab" }}
+      onMouseDown={onMouseDown}
+      onMouseMove={onMouseMove}
+      onMouseUp={onMouseUp}
+      onMouseLeave={onMouseUp}
     />
   );
 }
 
-// ─── Avatar Builder ────────────────────────────────────────────────────────────
-
+// ─── AVATAR BUILDER ───────────────────────────────────────────────────────────
 interface AvatarBuilderProps {
   value: AvatarConfig;
   onChange: (config: AvatarConfig) => void;
   compact?: boolean;
 }
 
-const HAIR_STYLE_NAMES = ["Spike", "Long", "Mohawk", "Afro", "Bob", "Ponytail", "Bun", "Wavy", "Buzz", "Curly"];
-const ACC_NAMES = ["Aucun", "Lunettes", "Casque", "Couronne", "Casquette", "Cravate", "Écharpe", "Visière", "Boucles", "Sac-à-dos"];
-
-export function AvatarBuilder({ value, onChange, compact = false }: AvatarBuilderProps) {
+export function AvatarBuilder({ value, onChange, compact }: AvatarBuilderProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  // Live preview
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // Background
-    const bg = ctx.createRadialGradient(60, 80, 10, 60, 80, 70);
-    bg.addColorStop(0, "#1e2a3a");
-    bg.addColorStop(1, "#0a0f1e");
-    ctx.fillStyle = bg;
-    ctx.fillRect(0, 0, 120, 160);
-
-    // Floor shadow
-    ctx.fillStyle = "rgba(0,0,0,0.4)";
-    ctx.beginPath();
-    ctx.ellipse(60, 140, 25, 8, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    drawAvatar(ctx, 60, 120, value, 1.1);
+    ctx.clearRect(0, 0, 120, 170);
+    ctx.fillStyle = "#0d1528";
+    ctx.fillRect(0, 0, 120, 170);
+    drawHabboCharacter(ctx, 60, 138, value, "", "idle", 0, false);
   }, [value]);
 
-  const update = <K extends keyof AvatarConfig>(key: K, val: number) =>
-    onChange({ ...value, [key]: val });
+  const set = (key: keyof AvatarConfig, val: string) => onChange({ ...value, [key]: val });
 
-  const Swatch = ({ colors, selected, onSelect }: { colors: string[]; selected: number; onSelect: (i: number) => void }) => (
-    <div className="flex flex-wrap gap-1">
-      {colors.map((c, i) => (
-        <button
-          key={i}
-          title={c}
-          onClick={() => onSelect(i)}
-          className="rounded-full border-2 transition-all"
-          style={{
-            background: c,
-            width: compact ? 14 : 18,
-            height: compact ? 14 : 18,
-            borderColor: selected === i ? "#818cf8" : "transparent",
-            transform: selected === i ? "scale(1.2)" : "scale(1)",
-          }}
-        />
-      ))}
-    </div>
-  );
+  function Swatch({ palette, field }: { palette: string[]; field: keyof AvatarConfig }) {
+    return (
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginBottom: 6 }}>
+        {palette.map((c) => (
+          <button
+            key={c}
+            onClick={() => set(field, c)}
+            style={{
+              width: 14, height: 14, borderRadius: "50%", background: c, cursor: "pointer",
+              border: value[field] === c ? "2px solid #fff" : "1px solid rgba(255,255,255,0.2)",
+              padding: 0,
+            }}
+          />
+        ))}
+      </div>
+    );
+  }
 
-  const Row = ({ label, children }: { label: string; children: React.ReactNode }) => (
-    <div className="space-y-1">
-      <p className="text-[10px] font-medium uppercase tracking-wider text-indigo-400/70">{label}</p>
-      {children}
-    </div>
-  );
-
-  const StylePicker = ({ max, selected, onSelect, names }: { max: number; selected: number; onSelect: (i: number) => void; names?: string[] }) => (
-    <div className="flex flex-wrap gap-1">
-      {Array.from({ length: max }).map((_, i) => (
-        <button
-          key={i}
-          onClick={() => onSelect(i)}
-          className={`rounded px-1.5 py-0.5 text-[9px] font-medium transition-all ${selected === i ? "bg-indigo-600 text-white" : "bg-white/5 text-slate-400 hover:bg-white/10"}`}
-        >
-          {names ? names[i] : i + 1}
-        </button>
-      ))}
-    </div>
-  );
+  function Tabs({ options, field }: { options: string[]; field: keyof AvatarConfig }) {
+    return (
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginBottom: 6 }}>
+        {options.map((o) => (
+          <button
+            key={o}
+            onClick={() => set(field, o)}
+            style={{
+              padding: "2px 6px", borderRadius: 4, fontSize: 9, cursor: "pointer",
+              background: value[field] === o ? "#3498db" : "#1a2535",
+              border: "1px solid rgba(255,255,255,0.15)", color: "#fff",
+            }}
+          >
+            {o}
+          </button>
+        ))}
+      </div>
+    );
+  }
 
   return (
-    <div className={`flex ${compact ? "gap-3" : "gap-4"}`}>
-      {/* Preview */}
-      <div className="shrink-0">
-        <canvas
-          ref={canvasRef}
-          width={120}
-          height={160}
-          className="rounded-lg border border-white/10"
-          style={{ imageRendering: "pixelated" }}
-        />
-        <p className="mt-1 text-center text-[9px] text-slate-500">Aperçu</p>
-      </div>
-
-      {/* Controls */}
-      <div className={`flex-1 space-y-3 overflow-y-auto ${compact ? "max-h-48" : "max-h-80"} pr-1`}>
-        <Row label="Teint">
-          <Swatch colors={SKIN_TONES} selected={value.skinTone} onSelect={(i) => update("skinTone", i)} />
-        </Row>
-        <Row label="Coiffure">
-          <StylePicker max={10} selected={value.hairStyle} onSelect={(i) => update("hairStyle", i)} names={HAIR_STYLE_NAMES} />
-          <Swatch colors={HAIR_COLORS} selected={value.hairColor} onSelect={(i) => update("hairColor", i)} />
-        </Row>
-        <Row label="Yeux">
-          <StylePicker max={6} selected={value.eyeStyle} onSelect={(i) => update("eyeStyle", i)} />
-          <Swatch colors={EYE_COLORS} selected={value.eyeColor} onSelect={(i) => update("eyeColor", i)} />
-        </Row>
-        <Row label="Haut">
-          <StylePicker max={12} selected={value.topStyle} onSelect={(i) => update("topStyle", i)} />
-          <Swatch colors={TOP_COLORS} selected={value.topColor} onSelect={(i) => update("topColor", i)} />
-        </Row>
-        <Row label="Bas">
-          <StylePicker max={8} selected={value.bottomStyle} onSelect={(i) => update("bottomStyle", i)} />
-          <Swatch colors={BOTTOM_COLORS} selected={value.bottomColor} onSelect={(i) => update("bottomColor", i)} />
-        </Row>
-        <Row label="Chaussures">
-          <StylePicker max={6} selected={value.shoeStyle} onSelect={(i) => update("shoeStyle", i)} />
-          <Swatch colors={SHOE_COLORS} selected={value.shoeColor} onSelect={(i) => update("shoeColor", i)} />
-        </Row>
-        <Row label="Accessoire">
-          <StylePicker max={10} selected={value.accessory} onSelect={(i) => update("accessory", i)} names={ACC_NAMES} />
-        </Row>
+    <div style={{ display: "flex", gap: 14, background: "#0d1528", padding: 12, borderRadius: 10, color: "#fff" }}>
+      <canvas ref={canvasRef} width={120} height={170} style={{ borderRadius: 8, flexShrink: 0 }} />
+      <div style={{ flex: 1, fontSize: 11, overflowY: "auto", maxHeight: 170 }}>
+        <div style={{ fontSize: 9, fontWeight: 700, color: "#7f8c8d", marginBottom: 2 }}>PEAU</div>
+        <Swatch palette={SKIN_TONES} field="skinTone" />
+        <div style={{ fontSize: 9, fontWeight: 700, color: "#7f8c8d", marginBottom: 2 }}>CHEVEUX</div>
+        <Swatch palette={HAIR_COLORS} field="hairColor" />
+        <Tabs options={["default","spiky","long","short"]} field="hairStyle" />
+        <div style={{ fontSize: 9, fontWeight: 700, color: "#7f8c8d", marginBottom: 2 }}>HAUT</div>
+        <Swatch palette={TOP_COLORS} field="topColor" />
+        <div style={{ fontSize: 9, fontWeight: 700, color: "#7f8c8d", marginBottom: 2 }}>BAS</div>
+        <Swatch palette={BOTTOM_COLORS} field="bottomColor" />
+        <div style={{ fontSize: 9, fontWeight: 700, color: "#7f8c8d", marginBottom: 2 }}>YEUX</div>
+        <Swatch palette={EYE_COLORS} field="eyeColor" />
+        <div style={{ fontSize: 9, fontWeight: 700, color: "#7f8c8d", marginBottom: 2 }}>ACCESSOIRE</div>
+        <Tabs options={["none","glasses","hat","headset"]} field="accessory" />
       </div>
     </div>
   );
-}
-
-// ─── Default avatar presets by category ───────────────────────────────────────
-
-export function defaultAvatarForCategory(category: string, seed: number = 0): AvatarConfig {
-  const h = (base: number) => (base + seed * 3) % 12;
-  const s = (base: number, max: number) => (base + seed) % max;
-
-  const presets: Record<string, AvatarConfig> = {
-    helpdesk:  { skinTone: s(1, 6), hairStyle: 8, hairColor: h(0), eyeStyle: 0, eyeColor: 1, topStyle: 0, topColor: 2, bottomStyle: 0, bottomColor: 0, shoeStyle: 0, shoeColor: 0, accessory: 2, badge: 0 },
-    hr:        { skinTone: s(2, 6), hairStyle: 4, hairColor: h(4), eyeStyle: 1, eyeColor: 4, topStyle: 2, topColor: 4, bottomStyle: 1, bottomColor: 4, shoeStyle: 1, shoeColor: 2, accessory: 5, badge: 1 },
-    documents: { skinTone: s(0, 6), hairStyle: 1, hairColor: h(2), eyeStyle: 2, eyeColor: 2, topStyle: 4, topColor: 0, bottomStyle: 0, bottomColor: 2, shoeStyle: 0, shoeColor: 1, accessory: 1, badge: 2 },
-    sales:     { skinTone: s(3, 6), hairStyle: 0, hairColor: h(6), eyeStyle: 0, eyeColor: 5, topStyle: 5, topColor: 9, bottomStyle: 2, bottomColor: 7, shoeStyle: 2, shoeColor: 3, accessory: 5, badge: 3 },
-    support:   { skinTone: s(4, 6), hairStyle: 6, hairColor: h(8), eyeStyle: 3, eyeColor: 3, topStyle: 3, topColor: 5, bottomStyle: 3, bottomColor: 1, shoeStyle: 1, shoeColor: 0, accessory: 2, badge: 4 },
-    devops:    { skinTone: s(1, 6), hairStyle: 2, hairColor: h(1), eyeStyle: 0, eyeColor: 0, topStyle: 1, topColor: 10, bottomStyle: 0, bottomColor: 0, shoeStyle: 0, shoeColor: 0, accessory: 4, badge: 5 },
-  };
-
-  return presets[category] ?? {
-    skinTone: s(0, 6), hairStyle: s(0, 10), hairColor: h(0), eyeStyle: s(0, 6), eyeColor: s(0, 8),
-    topStyle: s(0, 12), topColor: s(0, 12), bottomStyle: s(0, 8), bottomColor: s(0, 12),
-    shoeStyle: s(0, 6), shoeColor: s(0, 7), accessory: 0, badge: s(0, 7),
-  };
-}
-
-// ─── Utility: generate demo agents for world ─────────────────────────────────
-
-export function generateWorldAgents(agentList: Array<{ id: string; name: string; category: string; state?: WorldAgent["state"]; chatBubble?: string }>): WorldAgent[] {
-  return agentList.slice(0, AGENT_TILE_POSITIONS.length).map((agent, idx) => {
-    const pos = AGENT_TILE_POSITIONS[idx];
-    return {
-      id: agent.id,
-      name: agent.name,
-      category: agent.category,
-      state: agent.state ?? "idle",
-      avatar: defaultAvatarForCategory(agent.category, idx),
-      tileX: pos.tx,
-      tileY: pos.ty,
-      chatBubble: agent.chatBubble ? { text: agent.chatBubble, expiresAt: Date.now() + 5000 } : undefined,
-      taskProgress: agent.state === "acting" || agent.state === "thinking" ? Math.random() * 80 + 10 : undefined,
-    };
-  });
 }
